@@ -60,15 +60,26 @@ class ProtobufDocument(val bytes: ByteArray) {
         parsedToEnd = w.error == null && w.pos == bytes.size
     }
 
-    fun applyPatches(patches: Map<Int, Any>): ByteArray {
+    data class PatchResult(val bytes: ByteArray, val failures: Map<Int, String>)
+
+    fun applyPatches(patches: Map<Int, Any>): ByteArray = applyPatchesDetailed(patches).bytes
+
+    fun applyPatchesDetailed(patches: Map<Int, Any>): PatchResult {
         val out = bytes.copyOf()
         val byOffset = fields.associateBy { it.tagOffset }
         val bb = ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN)
+        val failures = mutableMapOf<Int, String>()
         for ((off, raw) in patches) {
-            val f = byOffset[off] ?: continue
-            try { writeValue(bb, out, f, raw) } catch (_: Throwable) { /* skip bad input */ }
+            val f = byOffset[off]
+            if (f == null) {
+                failures[off] = "no field at offset 0x${off.toString(16)}"
+            } else {
+                try { writeValue(bb, out, f, raw) } catch (t: Throwable) {
+                    failures[off] = t.message ?: t::class.simpleName ?: "unknown error"
+                }
+            }
         }
-        return out
+        return PatchResult(out, failures)
     }
 
     private fun writeValue(bb: ByteBuffer, out: ByteArray, f: ProtoField, raw: Any) {

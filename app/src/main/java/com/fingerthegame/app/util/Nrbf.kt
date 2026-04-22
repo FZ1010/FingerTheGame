@@ -90,17 +90,32 @@ class NrbfDocument(val bytes: ByteArray) {
     }
 
     /** Returns a copy of [bytes] with each (offset -> new value) applied. */
-    fun applyPatches(patches: Map<Int, Any>): ByteArray {
+    /** Result of [applyPatches]: the patched bytes plus per-offset error
+     *  details for any patches that failed to apply (out-of-range, bad
+     *  parse, would-resize, etc.). The caller surfaces these to the UI
+     *  instead of pretending the save worked. */
+    data class PatchResult(val bytes: ByteArray, val failures: Map<Int, String>)
+
+    fun applyPatches(patches: Map<Int, Any>): ByteArray = applyPatchesDetailed(patches).bytes
+
+    fun applyPatchesDetailed(patches: Map<Int, Any>): PatchResult {
         val out = bytes.copyOf()
         val byOffset = fields.associateBy { it.offset }
         val bb = ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN)
+        val failures = mutableMapOf<Int, String>()
         for ((off, raw) in patches) {
-            val f = byOffset[off] ?: continue
-            try {
-                writeValue(bb, f, raw)
-            } catch (_: Throwable) { /* skip bad input — silently */ }
+            val f = byOffset[off]
+            if (f == null) {
+                failures[off] = "no field at offset 0x${off.toString(16)}"
+            } else {
+                try {
+                    writeValue(bb, f, raw)
+                } catch (t: Throwable) {
+                    failures[off] = t.message ?: t::class.simpleName ?: "unknown error"
+                }
+            }
         }
-        return out
+        return PatchResult(out, failures)
     }
 
     private fun writeValue(bb: ByteBuffer, f: NrbfField, raw: Any) {
@@ -793,15 +808,28 @@ private class NrbfWalker(val buf: ByteArray) {
         u32()                                          // obj id
         val arrayType = u8()                            // Single, Jagged, Rectangular, ...
         val rank = u32().toInt()
-        val lengths = IntArray(rank) { u32().toInt() }
+        require(rank in 0..32) { "BinaryArray rank $rank out of range" }
+        val lengths = IntArray(rank) {
+            val l = u32().toInt()
+            require(l >= 0) { "BinaryArray dim $it negative: $l" }
+            l
+        }
         if (arrayType in setOf(3, 4, 5)) {
             for (i in 0 until rank) u32()              // lower bounds
         }
         val bt = u8()
         val tempAddl = IntArray(1) { -1 }
         consumeAddlInfo(bt, tempAddl, 0)
+        // Bound the iteration count by the remaining buffer — a malicious
+        // (or corrupt) file with rank=2 lengths=[2^30, 2^30] would otherwise
+        // park us in a 4-trillion-iteration loop.
         var total = 1L
-        for (l in lengths) total *= l
+        for (l in lengths) {
+            total = Math.multiplyExact(total, l.toLong())
+            require(total <= buf.size.toLong()) {
+                "BinaryArray dimensions imply $total elements, larger than ${buf.size}-byte file"
+            }
+        }
         for (n in 0 until total) {
             readMemberValue("Array", "item", bt, tempAddl[0])
         }
@@ -812,6 +840,12 @@ private class NrbfWalker(val buf: ByteArray) {
         val length = u32().toInt()
         val pc = u8()
         val w = primWidth(pc)
+        require(length >= 0) { "ArraySinglePrimitive negative length: $length" }
+        // Long math to dodge silent integer overflow on `length * w`.
+        val totalBytes = length.toLong() * w.toLong()
+        require(pos + totalBytes <= buf.size.toLong()) {
+            "ArraySinglePrimitive overflows buffer: pos=$pos len=$length w=$w size=${buf.size}"
+        }
         pos += length * w
     }
 
@@ -858,6 +892,23 @@ private class NrbfWalker(val buf: ByteArray) {
     private fun i64(): Long { val v = ByteBuffer.wrap(buf, pos, 8).order(ByteOrder.LITTLE_ENDIAN).long; pos += 8; return v }
     private fun f32(): Float { val v = ByteBuffer.wrap(buf, pos, 4).order(ByteOrder.LITTLE_ENDIAN).float; pos += 4; return v }
     private fun f64(): Double { val v = ByteBuffer.wrap(buf, pos, 8).order(ByteOrder.LITTLE_ENDIAN).double; pos += 8; return v }
-    private fun vlq(): Int { var n=0; var s=0; while(true){val b=u8(); n=n or ((b and 0x7F) shl s); if(b and 0x80==0) return n; s+=7 } }
-    private fun lpString(): String { val n = vlq(); val s = String(buf, pos, n, Charsets.UTF_8); pos += n; return s }
+    private fun vlq(): Int {
+        var n = 0; var s = 0
+        // Cap at 5 bytes (the most a 32-bit varint can need); reject overflow.
+        for (i in 0 until 5) {
+            val b = u8()
+            n = n or ((b and 0x7F) shl s)
+            if (b and 0x80 == 0) return n
+            s += 7
+        }
+        error("VLQ length > 5 bytes at 0x${pos.toString(16)}")
+    }
+    private fun lpString(): String {
+        val n = vlq()
+        require(n >= 0) { "lpString negative length: $n" }
+        require(pos + n.toLong() <= buf.size.toLong()) {
+            "lpString length $n overflows buffer at pos=$pos size=${buf.size}"
+        }
+        val s = String(buf, pos, n, Charsets.UTF_8); pos += n; return s
+    }
 }

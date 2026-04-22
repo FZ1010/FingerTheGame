@@ -53,6 +53,10 @@ fun FileViewerScreen(
         loading = true
         runCatching {
             withContext(Dispatchers.IO) {
+                val sz = runCatching { ShizukuExec.statSize(path) }.getOrDefault(-1L)
+                if (sz > ShizukuExec.MAX_FILE_BYTES) {
+                    error("File is ${sz / 1024 / 1024} MB — refusing to load (>${ShizukuExec.MAX_FILE_BYTES / 1024 / 1024} MB cap)")
+                }
                 val raw = ShizukuExec.readFile(path)
                 FormatDetect.unwrap(raw)
             }
@@ -109,6 +113,10 @@ fun FileViewerScreen(
                                         original?.let { ShizukuExec.backupLocal(path, it, ctx.cacheDir) }
                                     }
                                     withContext(Dispatchers.IO) {
+                                        // Confine writes to the picked package's data dir —
+                                        // a poisoned `path` shouldn't ever get us writing to
+                                        // /data/local/tmp/ or /sdcard/ at large.
+                                        ShizukuExec.validateWritePath(path, pkg)
                                         ShizukuExec.forceStop(pkg)
                                         val toWrite = wrap?.rewrap(cur) ?: cur
                                         ShizukuExec.writeFile(path, toWrite)
@@ -189,13 +197,23 @@ fun FileViewerScreen(
                 comparisonName = comparePath ?: "",
                 onApply = { selected ->
                     diffEntries = null
-                    val orig = original ?: return@DiffSheet
+                    // Apply against `current` (which carries any in-progress
+                    // user edits) rather than `original` — otherwise selecting
+                    // a diff silently drops everything the user has typed.
+                    val base = current ?: original ?: return@DiffSheet
                     val patches = selected.associate { it.field.offset to it.newValue }
                     if (patches.isNotEmpty()) {
-                        val doc = NrbfDocument(orig)
-                        current = doc.applyPatches(patches)
+                        val doc = NrbfDocument(base)
+                        val result = doc.applyPatchesDetailed(patches)
+                        current = result.bytes
                         scope.launch {
-                            snackbarHost.showSnackbar("Applied ${patches.size} change${if (patches.size == 1) "" else "s"} — Save to write")
+                            val ok = patches.size - result.failures.size
+                            val msg = if (result.failures.isEmpty()) {
+                                "Applied $ok change${if (ok == 1) "" else "s"} — Save to write"
+                            } else {
+                                "Applied $ok of ${patches.size} (${result.failures.size} rejected: ${result.failures.values.first().take(80)})"
+                            }
+                            snackbarHost.showSnackbar(msg, withDismissAction = true)
                         }
                     }
                 },
