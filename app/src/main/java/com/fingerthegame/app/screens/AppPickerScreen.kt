@@ -124,17 +124,42 @@ fun AppPickerScreen(
                     )
                 }
             } else {
+                var explainPkg by remember { mutableStateOf<AppEntry?>(null) }
                 LazyColumn(Modifier.fillMaxSize()) {
                     items(filtered, key = { it.pkg }) { app ->
                         val denied = com.fingerthegame.app.util.Ethics.isDeniedPackage(app.pkg)
                         AppRow(app = app, denied = denied) {
-                            if (!denied) {
-                                val root = "/sdcard/Android/data/${app.pkg}"
-                                onPick(app.pkg, app.label, root)
+                            when {
+                                denied -> { /* blocked, ignore tap */ }
+                                !app.hasExternalData -> { explainPkg = app }
+                                else -> {
+                                    val root = "/sdcard/Android/data/${app.pkg}"
+                                    onPick(app.pkg, app.label, root)
+                                }
                             }
                         }
                         HorizontalDivider()
                     }
+                }
+                explainPkg?.let { e ->
+                    AlertDialog(
+                        onDismissRequest = { explainPkg = null },
+                        title = { Text("${e.label} stores its save in private storage") },
+                        text = {
+                            Text(
+                                "${e.pkg} doesn't have a folder under /sdcard/Android/data/, which means " +
+                                "everything it saves lives in /data/data/${e.pkg}/. That directory is " +
+                                "locked to the app's own UID by Android — Shizuku's shell user can't " +
+                                "read it without a real root exploit.\n\n" +
+                                "This is a platform limit, not a bug. Most newer Android games are " +
+                                "like this. Older Unity titles and some Real-War-style games leak " +
+                                "their saves to /sdcard/Android/data/ — those work; this one won't."
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = { explainPkg = null }) { Text("Got it") }
+                        },
+                    )
                 }
             }
         }
@@ -181,8 +206,16 @@ private fun AppRow(app: AppEntry, denied: Boolean = false, onClick: () -> Unit) 
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        if (app.hasExternalData) {
-            AssistChip(onClick = {}, label = { Text("data") })
+        when {
+            denied -> {}
+            app.hasExternalData -> AssistChip(onClick = {}, label = { Text("data") })
+            else -> AssistChip(
+                onClick = {},
+                label = { Text("internal-only", style = MaterialTheme.typography.labelSmall) },
+                colors = AssistChipDefaults.assistChipColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                ),
+            )
         }
     }
 }
