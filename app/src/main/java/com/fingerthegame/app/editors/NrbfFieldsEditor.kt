@@ -104,6 +104,22 @@ private fun looksRound(abs: Long): Boolean {
     return s.length >= 2 && s.drop(1).all { it == '0' }
 }
 
+/** Compact emoji badges that surface why a field is interesting:
+ *  🔥 keyword match (likely cheat term in any language)
+ *  📈 large magnitude (>= 1M, likely currency/score counter)
+ *  💯 round-number value (1000, 5000, …, a human-set default) */
+private fun valueBadges(field: NrbfField): String {
+    val sb = StringBuilder()
+    val nameLower = field.displayName.lowercase()
+    if (HOT_KEYWORDS.any { nameLower.contains(it) }) sb.append("🔥")
+    val abs = magnitudeOrNull(field.originalValue)
+    if (abs != null) {
+        if (abs >= 1_000_000L) sb.append("📈")
+        if (looksRound(abs)) sb.append("💯")
+    }
+    return sb.toString()
+}
+
 private data class IndexedField(
     val field: NrbfField,
     val nameLower: String,
@@ -486,6 +502,8 @@ private fun FieldRow(
 
     val bg = if (changed) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent
 
+    val badges = remember(field) { valueBadges(field) }
+
     Column(
         Modifier.fillMaxWidth()
             .background(bg)
@@ -502,6 +520,9 @@ private fun FieldRow(
                 modifier = Modifier.weight(1f),
                 maxLines = 1,
             )
+            if (badges.isNotEmpty()) {
+                Text(badges, fontSize = 12.sp, modifier = Modifier.padding(end = 6.dp))
+            }
             Text(
                 if (changed) "$displayCur → ${currentInput ?: ""}" else displayCur,
                 style = MaterialTheme.typography.bodySmall,
