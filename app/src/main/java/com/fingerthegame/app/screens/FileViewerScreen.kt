@@ -13,6 +13,7 @@ import com.fingerthegame.app.editors.NrbfFieldsEditor
 import com.fingerthegame.app.editors.ProtobufEditor
 import com.fingerthegame.app.editors.SqliteEditor
 import com.fingerthegame.app.editors.TextEditor
+import com.fingerthegame.app.util.Es3Crack
 import com.fingerthegame.app.util.Format
 import com.fingerthegame.app.util.FormatDetect
 import com.fingerthegame.app.util.NrbfDiff
@@ -94,6 +95,36 @@ fun FileViewerScreen(
                 actions = {
                     if (format == Format.NRBF && current != null) {
                         TextButton(onClick = { showComparePicker = true }) { Text("Compare") }
+                    }
+                    val orig = original
+                    if (format == Format.BINARY && orig != null && Es3Crack.looksEncrypted(orig)) {
+                        TextButton(onClick = {
+                            scope.launch {
+                                snackbarHost.showSnackbar("Pulling APK + scanning for ES3 password…",
+                                    withDismissAction = true)
+                                val res = withContext(Dispatchers.IO) {
+                                    val apks = Es3Crack.pullApkFiles(ctx, pkg)
+                                    if (apks.isEmpty()) return@withContext null
+                                    val cands = Es3Crack.candidatesFromApks(apks, ctx.cacheDir)
+                                    Es3Crack.crack(orig, cands)
+                                }
+                                if (res == null) {
+                                    snackbarHost.showSnackbar("Couldn't read $pkg's APK")
+                                } else if (res.ok) {
+                                    val plain = res.plain!!
+                                    val u = FormatDetect.unwrap(plain)
+                                    original = u.effective
+                                    current = u.effective
+                                    format = u.format
+                                    snackbarHost.showSnackbar("✓ ${res.message}", withDismissAction = true)
+                                } else {
+                                    snackbarHost.showSnackbar(
+                                        "ES3 crack failed: ${res.message}",
+                                        withDismissAction = true,
+                                    )
+                                }
+                            }
+                        }) { Text("🔐 Try decrypt") }
                     }
                 },
             )
