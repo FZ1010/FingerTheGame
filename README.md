@@ -56,7 +56,45 @@ on each row offer MAX, 999, 100, +10, 0 (or `→ true`/`→ false` for booleans)
 - Android 11+ (the `/sdcard/Android/data/` lockdown is what makes Shizuku necessary)
 - Shizuku installed and running, with permission granted to this app
 
-## Building
+## Install (step-by-step)
+
+### 1 · Download the APK
+Grab the latest `app-release.apk` from the
+[**Releases page**](https://github.com/FZ1010/FingerTheGame/releases/latest).
+
+### 2 · Allow sideloading
+On your phone, open **Settings → Apps → Special access → Install unknown apps**, find your file
+manager / browser, and turn on **Allow from this source**.
+
+### 3 · Install Shizuku
+FingerTheGame needs Shizuku to read other apps' files without root.
+
+- Install **Shizuku** from the [Play Store](https://play.google.com/store/apps/details?id=moe.shizuku.privileged.api)
+  or [GitHub](https://github.com/RikkaApps/Shizuku/releases/latest).
+- Open Shizuku and follow its setup. Two options:
+  - **Wireless debugging** (Android 11+, no PC needed) — easiest. Shizuku has a one-tap pairing flow.
+  - **Wired ADB** (`adb shell sh /sdcard/Android/data/moe.shizuku.privileged.api/start.sh`) — works after a reboot
+    only until you reboot again.
+- Confirm the top of the Shizuku app says **"Shizuku is running"**.
+
+### 4 · Install FingerTheGame
+Open the downloaded APK on your phone and tap **Install**.
+
+### 5 · Grant Shizuku permission
+Open **FingerTheGame**. The home screen shows the Shizuku status — it should say
+**"Shizuku: needs permission"** the first time. Tap **Grant**, then **Allow** in the popup.
+
+When the status reads **"Shizuku: ready"** you're good.
+
+### 6 · Edit a save
+1. Tap **Pick an app** and choose a game (apps with a data folder are flagged).
+2. Browse into `files/` (or wherever the save lives) and tap the save file.
+3. The format is auto-detected. For NRBF saves you'll see grouped sections — tap a row to expand,
+   type or use the quick-fill chips, hit **Save**.
+4. The app force-stops the target before writing so the game reloads from disk. A timestamped backup
+   of the original is kept under FingerTheGame's cache.
+
+## Building from source
 
 ```bash
 gradle :app:assembleDebug
