@@ -2,7 +2,7 @@ package com.fingerthegame.app.util
 
 import android.util.Base64
 
-enum class Format { TEXT, JSON, XML, NRBF, SQLITE, BINARY }
+enum class Format { TEXT, JSON, XML, NRBF, SQLITE, PROTOBUF, BINARY }
 
 /**
  * Result of unwrapping a save's bytes through outer encodings (currently
@@ -48,7 +48,25 @@ object FormatDetect {
             }
             return Format.TEXT
         }
+        // Last resort before declaring BINARY: protobuf has no magic bytes,
+        // but a successful end-to-end parse is a very strong signal — small
+        // false-positive rate vs raw binary.
+        if (looksLikeProtobuf(bytes)) return Format.PROTOBUF
         return Format.BINARY
+    }
+
+    private fun looksLikeProtobuf(bytes: ByteArray): Boolean {
+        // Skip tiny / huge files — parsing huge binaries to test one detector
+        // is expensive; if a multi-MB file isn't NRBF/SQLite/text it's almost
+        // never protobuf in practice.
+        if (bytes.size < 16 || bytes.size > 8 * 1024 * 1024) return false
+        val doc = ProtobufDocument(bytes)
+        if (!doc.parsedToEnd) return false
+        if (doc.fields.isEmpty()) return false
+        // Most fields should have small, sane field numbers. Random binary
+        // data tends to produce wildly variable numbers.
+        val sane = doc.fields.count { it.fieldNumber in 1..2048 }
+        return sane.toDouble() / doc.fields.size >= 0.95
     }
 
     /**

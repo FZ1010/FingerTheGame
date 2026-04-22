@@ -177,6 +177,31 @@ private fun buildSections(indexed: List<IndexedField>): List<Section> {
         )
     }
 
+    // Lifeline for obfuscated saves: sort by raw value magnitude. When
+    // names are noise (`a`, `_x`, hash strings, language we don't know)
+    // the largest counters are still the cheat targets. Combined with
+    // Compare→two-save diff this is enough to cheat anything.
+    val byValue = indexed.asSequence()
+        .mapNotNull { idx -> magnitudeOrNull(idx.field.originalValue)?.let { idx to it } }
+        .filter { it.second > 0 }
+        .sortedByDescending { it.second }
+        .take(50)
+        .map { it.first }
+        .toList()
+    if (byValue.isNotEmpty()) {
+        // Open by default only when the keyword scorer didn't find anything —
+        // that's the obfuscated-save case where this section is the user's
+        // primary tool.
+        sections += Section(
+            id = "by-value",
+            emoji = "🔢",
+            name = "By Value (largest first)",
+            subtitle = "top ${byValue.size} numeric fields by absolute magnitude",
+            fields = byValue,
+            openByDefault = hot.isEmpty(),
+        )
+    }
+
     // Group every field by its class. Order by total cheat-score so the
     // most interesting class lands on top, regardless of which game.
     val buckets = indexed.groupBy { it.field.className }
@@ -270,9 +295,9 @@ private fun EditorContent(
         derivedStateOf {
             val q = query.trim().lowercase()
             state.sections.mapNotNull { sec ->
-                // While searching, hide the "Likely cheats" duplicate view
-                // so each match shows up exactly once (in its real class).
-                if (sec.id == "hot" && q.isNotEmpty()) return@mapNotNull null
+                // While searching, hide cross-class duplicate views so each
+                // match shows up exactly once (in its real class section).
+                if ((sec.id == "hot" || sec.id == "by-value") && q.isNotEmpty()) return@mapNotNull null
                 val seq = sec.fields.asSequence()
                     .filter { typeFilter == null || it.field.type == typeFilter }
                     .filter { q.isEmpty() || it.nameLower.contains(q) || it.classLower.contains(q) }
@@ -377,8 +402,8 @@ private fun EditorContent(
                 if (isOpen) {
                     items(
                         items = sec.fields,
-                        // Composite key: the same field can show up in both
-                        // the "hot" section and its real class section.
+                        // Composite key: same field can show up in hot,
+                        // by-value, and its real class section.
                         key = { "${sec.id}|${it.field.id}" },
                         contentType = { it.field.type },
                     ) { idx ->

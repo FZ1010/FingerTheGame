@@ -10,6 +10,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.fingerthegame.app.editors.HexViewer
 import com.fingerthegame.app.editors.NrbfFieldsEditor
+import com.fingerthegame.app.editors.ProtobufEditor
 import com.fingerthegame.app.editors.SqliteEditor
 import com.fingerthegame.app.editors.TextEditor
 import com.fingerthegame.app.util.Format
@@ -221,6 +222,10 @@ private fun FileBody(
             bytes = bytes,
             onBytesUpdated = onUpdate,
         )
+        Format.PROTOBUF -> ProtobufEditor(
+            bytes = bytes,
+            onBytesUpdated = onUpdate,
+        )
         Format.SQLITE -> SqliteEditor(
             ctx = ctx,
             initialBytes = bytes,
@@ -235,6 +240,7 @@ private fun Format.label(): String = when (this) {
     Format.JSON -> "JSON"
     Format.XML -> "XML"
     Format.NRBF -> ".NET NRBF"
+    Format.PROTOBUF -> "Protobuf"
     Format.SQLITE -> "SQLite DB"
     Format.BINARY -> "binary (hex)"
 }
