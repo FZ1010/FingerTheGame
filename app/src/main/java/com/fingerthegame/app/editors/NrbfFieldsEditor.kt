@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.sp
 import com.fingerthegame.app.util.NrbfDocument
 import com.fingerthegame.app.util.NrbfField
 import com.fingerthegame.app.util.NrbfType
+import java.math.BigInteger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
@@ -231,6 +232,7 @@ private fun EditorContent(
                         NrbfType.BOOL -> str.trim().lowercase().let { it == "true" || it == "1" }
                         NrbfType.F32, NrbfType.F64 -> str.toDoubleOrNull() ?: return@mapNotNull null
                         NrbfType.STRING -> str
+                        NrbfType.BIGINT -> str.trim().toBigIntegerOrNull() ?: return@mapNotNull null
                         else -> str.toLongOrNull() ?: return@mapNotNull null
                     }
                     off to v
@@ -498,7 +500,7 @@ private fun FieldRow(
                         keyboardType = when (field.type) {
                             NrbfType.BOOL -> KeyboardType.Text
                             NrbfType.F32, NrbfType.F64 -> KeyboardType.Decimal
-                            else -> KeyboardType.Number
+                            else -> KeyboardType.Number   // BIGINT also wants the number pad
                         }
                     ),
                     modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
@@ -527,19 +529,32 @@ private fun QuickFillButtons(field: NrbfField, currentInput: String?, onEdit: (S
             val cur = parseBool(currentInput) ?: (field.originalValue as? Boolean) ?: false
             QuickButton(if (cur) "→ false" else "→ true") { onEdit(if (cur) "false" else "true") }
         } else {
-            QuickButton("MAX") { onEdit(maxValueFor(field).toString()) }
+            QuickButton("MAX") { onEdit(maxValueFor(field)) }
             QuickButton("999") { onEdit("999") }
             QuickButton("100") { onEdit("100") }
-            QuickButton("+10") {
-                val base = currentInput?.toDoubleOrNull()
-                    ?: (field.originalValue as? Number)?.toDouble()
-                    ?: 0.0
-                val next = base + 10
-                onEdit(if (field.type in FLOAT_TYPES) next.toString() else next.toLong().toString())
-            }
+            QuickButton("+10") { onEdit(plusTen(field, currentInput)) }
             QuickButton("0") { onEdit("0") }
         }
     }
+}
+
+/**
+ * Adds 10 to whatever the user has typed (or to the original value if they
+ * haven't typed anything). Uses BigInteger so very large counters don't lose
+ * precision via Double.
+ */
+private fun plusTen(field: NrbfField, currentInput: String?): String {
+    val typed = currentInput?.trim()
+    val base: BigInteger = when {
+        typed != null -> typed.toBigIntegerOrNull()
+            ?: typed.toDoubleOrNull()?.toLong()?.let(BigInteger::valueOf)
+            ?: BigInteger.ZERO
+        field.originalValue is BigInteger -> field.originalValue
+        field.originalValue is Number -> BigInteger.valueOf(field.originalValue.toLong())
+        else -> BigInteger.ZERO
+    }
+    val next = base.add(BigInteger.TEN)
+    return if (field.type in FLOAT_TYPES) next.toDouble().toString() else next.toString()
 }
 
 private fun parseBool(s: String?): Boolean? = when (s?.trim()?.lowercase()) {
@@ -559,16 +574,33 @@ private fun QuickButton(label: String, onClick: () -> Unit) {
     }
 }
 
-private fun maxValueFor(f: NrbfField): Number = when (f.type) {
-    NrbfType.BOOL -> 1
-    NrbfType.BYTE -> 255
-    NrbfType.SBYTE -> 127
-    NrbfType.I16 -> Short.MAX_VALUE.toInt()
-    NrbfType.U16 -> 65535
-    NrbfType.I32, NrbfType.U32 -> Int.MAX_VALUE
-    NrbfType.I64, NrbfType.U64 -> Long.MAX_VALUE
-    NrbfType.F32, NrbfType.F64 -> 9_999_999
-    NrbfType.STRING -> 0
+private fun maxValueFor(f: NrbfField): String = when (f.type) {
+    NrbfType.BOOL -> "1"
+    NrbfType.BYTE -> "255"
+    NrbfType.SBYTE -> "127"
+    NrbfType.I16 -> Short.MAX_VALUE.toString()
+    NrbfType.U16 -> "65535"
+    NrbfType.I32, NrbfType.U32 -> Int.MAX_VALUE.toString()
+    NrbfType.I64, NrbfType.U64 -> Long.MAX_VALUE.toString()
+    NrbfType.F32, NrbfType.F64 -> "9999999"
+    NrbfType.BIGINT -> bigIntMaxFor(f).toString()
+    NrbfType.STRING -> "0"
+}
+
+/**
+ * MAX for a BigInteger has to respect the original allocation — writing a
+ * value larger than what `_bits` can hold would shift later byte offsets.
+ * If `_bits` was empty (sign-only), Int32.MAX is the ceiling.
+ */
+private fun bigIntMaxFor(f: NrbfField): BigInteger {
+    val layout = f.meta as? com.fingerthegame.app.util.BigIntLayout
+        ?: return BigInteger.valueOf(Int.MAX_VALUE.toLong())
+    return if (layout.bitsLength == 0) {
+        BigInteger.valueOf(Int.MAX_VALUE.toLong())
+    } else {
+        // 2^(bitsLength * 32) - 1, the largest unsigned value that fits.
+        BigInteger.ONE.shiftLeft(layout.bitsLength * 32).subtract(BigInteger.ONE)
+    }
 }
 
 @Composable
