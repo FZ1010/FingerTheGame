@@ -18,6 +18,8 @@ import com.fingerthegame.app.util.FormatDetect
 import com.fingerthegame.app.util.NrbfDiff
 import com.fingerthegame.app.util.NrbfDiffEntry
 import com.fingerthegame.app.util.NrbfDocument
+import com.fingerthegame.app.util.RecentEntry
+import com.fingerthegame.app.util.Recents
 import com.fingerthegame.app.util.ShizukuExec
 import com.fingerthegame.app.util.Unwrapped
 import kotlinx.coroutines.Dispatchers
@@ -59,6 +61,7 @@ fun FileViewerScreen(
             current = unwrapped.effective
             format = unwrapped.format
             wrap = unwrapped
+            Recents.add(ctx, RecentEntry(pkg, label, path, System.currentTimeMillis()))
             if (unwrapped.wrappedAsBase64) {
                 snackbarHost.showSnackbar("Detected base64 wrapper · decoded inside")
             }

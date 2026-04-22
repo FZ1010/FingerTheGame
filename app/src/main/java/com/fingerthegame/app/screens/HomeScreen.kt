@@ -1,11 +1,23 @@
 package com.fingerthegame.app.screens
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.fingerthegame.app.util.RecentEntry
+import com.fingerthegame.app.util.Recents
 import com.fingerthegame.app.util.ShizukuExec
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -14,12 +26,18 @@ fun HomeScreen(
     onRequestPermission: () -> Unit,
     onRecheck: () -> Unit,
     onPickApp: () -> Unit,
+    onOpenRecent: (RecentEntry) -> Unit,
 ) {
+    val ctx = LocalContext.current
+    // Re-read on every entry to Home so we pick up files just opened.
+    val recents = remember { mutableStateOf(emptyList<RecentEntry>()) }
+    LaunchedEffect(Unit) { recents.value = Recents.read(ctx) }
+
     Column(
         Modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("Universal Save Editor", style = MaterialTheme.typography.headlineMedium)
+        Text("FingerTheGame", style = MaterialTheme.typography.headlineMedium)
         Text(
             "Browse and edit any accessible app's save data via Shizuku.",
             style = MaterialTheme.typography.bodyMedium,
@@ -30,6 +48,17 @@ fun HomeScreen(
         if (status == ShizukuExec.Status.READY) {
             Button(onClick = onPickApp, modifier = Modifier.fillMaxWidth()) {
                 Text("Pick an app")
+            }
+            if (recents.value.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                RecentsCard(
+                    entries = recents.value,
+                    onOpen = onOpenRecent,
+                    onForget = { p ->
+                        Recents.remove(ctx, p)
+                        recents.value = Recents.read(ctx)
+                    },
+                )
             }
         }
 
@@ -67,6 +96,53 @@ private fun ShizukuStatusCard(
             if (action != null && label != null) {
                 Spacer(Modifier.height(8.dp))
                 Button(onClick = action) { Text(label) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecentsCard(
+    entries: List<RecentEntry>,
+    onOpen: (RecentEntry) -> Unit,
+    onForget: (path: String) -> Unit,
+) {
+    val timeFmt = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US) }
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Column(Modifier.padding(8.dp)) {
+            Text(
+                "Recent",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
+            )
+            // Cap height so a long history doesn't push the rest of the
+            // home screen off-screen.
+            LazyColumn(Modifier.heightIn(max = 320.dp)) {
+                items(entries, key = { it.path }) { e ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { onOpen(e) }
+                            .padding(horizontal = 4.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(e.fileName, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+                            Text(
+                                "${e.label} · ${timeFmt.format(Date(e.openedAt))}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                            )
+                        }
+                        TextButton(onClick = { onForget(e.path) }) { Text("×") }
+                    }
+                    HorizontalDivider()
+                }
             }
         }
     }

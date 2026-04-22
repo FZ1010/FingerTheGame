@@ -15,6 +15,7 @@ import com.fingerthegame.app.screens.AppPickerScreen
 import com.fingerthegame.app.screens.FileBrowserScreen
 import com.fingerthegame.app.screens.FileViewerScreen
 import com.fingerthegame.app.screens.HomeScreen
+import com.fingerthegame.app.util.RecentEntry
 import com.fingerthegame.app.util.ShizukuExec
 import rikka.shizuku.Shizuku
 
@@ -58,6 +59,7 @@ private fun AppRoot(externalTick: Int) {
             onRequestPermission = { ShizukuExec.requestPermission() },
             onRecheck = { /* status already recomputes via externalTick */ },
             onPickApp = { stack.add(Screen.AppPicker) },
+            onOpenRecent = { entry -> stack.add(Screen.FileViewer(entry.pkg, entry.label, entry.path)) },
         )
         Screen.AppPicker -> AppPickerScreen(
             onBack = { stack.removeAt(stack.lastIndex) },
