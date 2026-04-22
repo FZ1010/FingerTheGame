@@ -1,0 +1,95 @@
+{
+  "package": "com.devdop.realwar",
+  "label": "Real War",
+  "version": 1,
+  "recipes": [
+    {
+      "id": "max_money",
+      "title": "💰 Max Money",
+      "description": "Set coin balance to 1,000,000,000",
+      "files": [
+        {
+          "relativePath": "files/PersistentData.data",
+          "format": "NRBF",
+          "edits": [
+            {
+              "matchDisplayName": "coinsAmountBigIntegerObservedValue",
+              "value": "1000000000"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "max_skipits",
+      "title": "🎯 Max Skipits",
+      "description": "Set skipit balance to 1,000,000",
+      "files": [
+        {
+          "relativePath": "files/PersistentData.data",
+          "format": "NRBF",
+          "edits": [
+            {
+              "matchDisplayName": "skipitsAmountBigIntegerObservedValue",
+              "value": "1000000"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "max_gems",
+      "title": "💎 Max Gems",
+      "description": "Set gem balance to 100,000",
+      "files": [
+        {
+          "relativePath": "files/PersistentData.data",
+          "format": "NRBF",
+          "edits": [
+            {
+              "matchDisplayName": "gemsAmountBigIntegerObservedValue",
+              "value": "100000"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "max_all_upgrades",
+      "title": "🔫 Max All Upgrades",
+      "description": "Maxes fire rate, damage, revenue, and current level",
+      "files": [
+        {
+          "relativePath": "files/PersistentData.data",
+          "format": "NRBF",
+          "edits": [
+            { "matchDisplayName": "fireRateLevelIntObservedValue",      "value": "100" },
+            { "matchDisplayName": "damageLevelIntObservedValue",        "value": "100" },
+            { "matchDisplayName": "revenueLevelIntObservedValue",       "value": "100" },
+            { "matchDisplayName": "currentLevelCounterObservedValue",   "value": "100" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "the_works",
+      "title": "🚀 The Works",
+      "description": "Maxes everything in one tap — money, skipits, gems, all upgrades",
+      "files": [
+        {
+          "relativePath": "files/PersistentData.data",
+          "format": "NRBF",
+          "edits": [
+            { "matchDisplayName": "coinsAmountBigIntegerObservedValue",   "value": "1000000000" },
+            { "matchDisplayName": "skipitsAmountBigIntegerObservedValue", "value": "1000000" },
+            { "matchDisplayName": "gemsAmountBigIntegerObservedValue",    "value": "100000" },
+            { "matchDisplayName": "fireRateLevelIntObservedValue",        "value": "100" },
+            { "matchDisplayName": "damageLevelIntObservedValue",          "value": "100" },
+            { "matchDisplayName": "revenueLevelIntObservedValue",         "value": "100" },
+            { "matchDisplayName": "currentLevelCounterObservedValue",     "value": "100" }
+          ]
+        }
+      ]
+    }
+  ]
+}

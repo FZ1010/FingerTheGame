@@ -4,6 +4,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -12,6 +14,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.fingerthegame.app.util.GameRecipes
+import com.fingerthegame.app.util.Recipe
+import com.fingerthegame.app.util.RecipeRegistry
 import com.fingerthegame.app.util.RecentEntry
 import com.fingerthegame.app.util.Recents
 import com.fingerthegame.app.util.ShizukuExec
@@ -23,34 +28,53 @@ import java.util.Locale
 @Composable
 fun HomeScreen(
     status: ShizukuExec.Status,
+    installedPackages: Set<String>,
     onRequestPermission: () -> Unit,
     onRecheck: () -> Unit,
     onPickApp: () -> Unit,
     onOpenRecent: (RecentEntry) -> Unit,
+    onApplyRecipe: (pkg: String, recipe: Recipe) -> Unit,
+    onOpenBackups: () -> Unit,
 ) {
     val ctx = LocalContext.current
     // Re-read on every entry to Home so we pick up files just opened.
     val recents = remember { mutableStateOf(emptyList<RecentEntry>()) }
-    LaunchedEffect(Unit) { recents.value = Recents.read(ctx) }
+    val recipes = remember { mutableStateOf(emptyList<GameRecipes>()) }
+    LaunchedEffect(Unit) {
+        recents.value = Recents.read(ctx)
+        recipes.value = RecipeRegistry.loadBundled(ctx)
+    }
 
     Column(
-        Modifier.fillMaxSize().padding(16.dp),
+        Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("FingerTheGame", style = MaterialTheme.typography.headlineMedium)
         Text(
-            "Browse and edit any accessible app's save data via Shizuku.",
+            "Cheat at your games. One-tap recipes for supported titles, full save editor for everything else.",
             style = MaterialTheme.typography.bodyMedium,
         )
 
         ShizukuStatusCard(status, onRequestPermission, onRecheck)
 
         if (status == ShizukuExec.Status.READY) {
-            Button(onClick = onPickApp, modifier = Modifier.fillMaxWidth()) {
-                Text("Pick an app")
+            // Recipes lead — this is the actual product for most users.
+            RecipesSection(
+                games = recipes.value,
+                installedPackages = installedPackages,
+                onApply = onApplyRecipe,
+            )
+
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onPickApp, modifier = Modifier.weight(1f)) {
+                    Text("Browse all apps")
+                }
+                OutlinedButton(onClick = onOpenBackups, modifier = Modifier.weight(0.7f)) {
+                    Text("Backups")
+                }
             }
+
             if (recents.value.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
                 RecentsCard(
                     entries = recents.value,
                     onOpen = onOpenRecent,
@@ -62,7 +86,6 @@ fun HomeScreen(
             }
         }
 
-        Spacer(Modifier.weight(1f))
         Text(
             "Writing to another app's files requires Shizuku to be running. " +
             "Edits are backed up to this app's cache before overwriting.",

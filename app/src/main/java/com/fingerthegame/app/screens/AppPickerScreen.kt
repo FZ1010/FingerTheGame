@@ -126,9 +126,12 @@ fun AppPickerScreen(
             } else {
                 LazyColumn(Modifier.fillMaxSize()) {
                     items(filtered, key = { it.pkg }) { app ->
-                        AppRow(app) {
-                            val root = "/sdcard/Android/data/${app.pkg}"
-                            onPick(app.pkg, app.label, root)
+                        val denied = com.fingerthegame.app.util.Ethics.isDeniedPackage(app.pkg)
+                        AppRow(app = app, denied = denied) {
+                            if (!denied) {
+                                val root = "/sdcard/Android/data/${app.pkg}"
+                                onPick(app.pkg, app.label, root)
+                            }
                         }
                         HorizontalDivider()
                     }
@@ -139,9 +142,11 @@ fun AppPickerScreen(
 }
 
 @Composable
-private fun AppRow(app: AppEntry, onClick: () -> Unit) {
+private fun AppRow(app: AppEntry, denied: Boolean = false, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp),
+        Modifier.fillMaxWidth()
+            .clickable(enabled = !denied, onClick = onClick)
+            .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (app.icon != null) {
@@ -155,7 +160,21 @@ private fun AppRow(app: AppEntry, onClick: () -> Unit) {
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(app.label, style = MaterialTheme.typography.bodyLarge)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    app.label,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = if (denied) MaterialTheme.colorScheme.onSurfaceVariant
+                            else MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (denied) {
+                    Spacer(Modifier.width(8.dp))
+                    Text("🚫 blocked",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error)
+                }
+            }
             Text(
                 app.pkg,
                 style = MaterialTheme.typography.bodySmall,

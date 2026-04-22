@@ -1,0 +1,77 @@
+name: Build & attest release APK
+
+# Triggered when a release tag (vX.Y.Z) is pushed. Builds the release APK
+# inside GitHub-hosted CI from the tagged commit, computes a SHA-256, and
+# attaches both the APK and a checksum file to the GitHub Release. Adds a
+# build-provenance attestation so users can verify the APK actually came
+# from this repo and this commit.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g. v1.4.1)'
+        required: true
+
+permissions:
+  contents: write           # upload assets to the Release
+  id-token: write           # SLSA-style provenance attestation
+  attestations: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "value=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build release APK
+        run: gradle :app:assembleRelease --no-daemon --no-build-cache
+
+      - name: Stage signed artifact
+        id: artifact
+        run: |
+          src="app/build/outputs/apk/release/app-release.apk"
+          dst="FingerTheGame-${{ steps.tag.outputs.value }}.apk"
+          cp "$src" "$dst"
+          sha256sum "$dst" | tee "$dst.sha256"
+          echo "apk=$dst" >> "$GITHUB_OUTPUT"
+          echo "sha=$dst.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Generate provenance attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ steps.artifact.outputs.apk }}
+
+      - name: Upload artifacts to GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          tag_name: ${{ steps.tag.outputs.value }}
+          files: |
+            ${{ steps.artifact.outputs.apk }}
+            ${{ steps.artifact.outputs.sha }}
+          fail_on_unmatched_files: true

@@ -4,166 +4,179 @@
 
 # FingerTheGame
 
-An Android save-data editor that browses and edits **other apps' files** without root, using
-[Shizuku](https://shizuku.rikka.app/) as a privilege bridge. Built to scratch a personal modding itch and then
-generalised into something CheatEngine-shaped that works on any app whose data lives under
-`/sdcard/Android/data/<pkg>/`.
+**Cheat at your Android games. No root.**
 
-## What it does
+One-tap recipes for supported titles ("Max Money in Real War"), full save editor for everything else.
+Works on stock Android 11+ via [Shizuku](https://shizuku.rikka.app/).
 
-- **Pick an installed app**, browse its `Android/data/.../files` tree (with a recents list on the home
-  screen so you skip the dance for files you've already opened)
-- **Auto-detect format**: text, JSON, XML, SQLite, .NET BinaryFormatter (NRBF), Protobuf wire format,
-  base64-wrapped variants of any of the above, or raw binary as a fallback
-- **Edit in place** without breaking byte offsets
-  - Text/JSON/XML — syntax-aware editor
-  - SQLite — row-level editing across tables
-  - NRBF (any .NET game) — every primitive parsed, grouped by class, with structural collapses for
-    BigInteger/Decimal/DateTime/TimeSpan/KeyValuePair so wrapper noise doesn't bury the actual values
-  - Protobuf (no `.proto` needed) — varint/fixed32/fixed64/length-delimited fields editable by number
-  - Binary — hex viewer
-- **Compare two saves** side by side: pick any sibling save or backup, see exactly which fields changed,
-  pull selected differences into the current save with one tap
-- **Save back** by force-stopping the target app, writing via Shizuku's shell uid, and keeping a timestamped
-  backup in this app's cache
+> ⚠️ Single-player only. Don't use this on online/multiplayer games — your account will get banned and that's
+> on you. Don't point it at banking, auth, or anything that handles real money.
 
-## NRBF editor
+## Get it
 
-The .NET BinaryFormatter parser walks the entire file and records every primitive's byte offset. Edits patch the
-existing buffer in place rather than re-serialising, so layout-changing operations (like resizing strings) are
-intentionally not exposed.
+Download the latest **APK** from the [Releases page](https://github.com/FZ1010/FingerTheGame/releases/latest)
+and sideload it. (Sideload setup → see "[Install](#install)" below if you've never done that on your phone.)
 
-### Auto-collapsing wrapper structures
+## What you can do tonight
 
-NRBF burdens many values inside structural noise — `System.Numerics.BigInteger` is two fields (`_sign` + `_bits`),
-`Observable<T>` wrappers expose only `ObservedValue`, `Decimal` is four packed Int32s, etc. The parser collapses
-all of these into single editable rows:
+### One-tap recipes (the easy way)
 
-- **`System.Numerics.BigInteger`** — `_sign` + `_bits` decoded into a single number; edits re-encode within the
-  original bit allocation (won't shift offsets)
-- **`System.Decimal`** — 4-int packed form → editable BigDecimal
-- **`System.DateTime`** — Int64 dateData with Kind bits → ISO-8601, Kind preserved on write
-- **`System.TimeSpan`** — Int64 ticks → ISO-8601 duration
-- **`System.Collections.Generic.KeyValuePair`** — dictionary entries get their key in the row label
-  (`[5] = 0.75` instead of all reading `value = 0.75`)
-- **`Observable<T>` / single-field wrapper accessors** — generic field names (`value`, `_value`, `ObservedValue`)
-  borrow the meaningful name from the closest non-generic ancestor by walking the inline context stack and the
-  forward-reference graph (handles Real War-style layouts where wrapper objects are forward-referenced and the
-  inline stack is empty by the time the inner value is parsed)
+If you have one of the supported games installed, FingerTheGame's home screen shows a recipe card for it.
+Tap **Apply** and you're done — no understanding of save formats required.
 
-### Field organisation
+Currently shipped recipes (more welcome via PR — see [Contributing recipes](#contributing-recipes)):
 
-Fields are grouped into sections, ordered by likely usefulness:
+- **Real War** — Max Money / Skipits / Gems / All Upgrades / The Works (one tap, all of the above)
 
-- **⭐ Likely Cheat Targets** — cross-class section pulling fields whose names match universal game terms
-  (money/coin/level/xp/hp/damage/premium/etc.) in 9 languages: English, Japanese, Korean, Chinese, Spanish,
-  Portuguese, German, French, Russian. Hidden if nothing matches; hidden during search to avoid duplicate hits.
-- **🔢 By Value (largest first)** — top 50 numeric fields ranked by absolute magnitude. The lifeline for
-  obfuscated saves: when names are noise, the largest counters are still the cheat targets. Open by default
-  only when keyword scoring found nothing.
-- **📦 \<ClassName\>** — every actual class in the file, ordered by aggregate cheat-score (most "interesting"
-  first). Top three game classes open by default.
-- **🛠 System.\*** — collection types pushed to the bottom and collapsed.
+A recipe is a tiny JSON file telling FingerTheGame "in this game's save, find these fields and set them to
+these values." Adding a new game = adding a JSON file.
 
-### Smart highlighting
+### Manual editor (the everything-else way)
 
-Each row gets emoji badges so you can scan for cheat targets at a glance:
-- 🔥 keyword match (likely cheat term)
-- 📈 value magnitude ≥ 1M (likely currency/score counter)
-- 💯 round-looking value (1000, 5000, … — a human-set default)
+Pick any installed app from the picker → browse to its save file → edit. The editor auto-detects:
 
-A search bar matches across field/class names. Type filters constrain to int/float/bool/string. Quick-fill chips
-on each row offer MAX, 999, 100, +10, 0 (or `→ true`/`→ false` for booleans).
+- **NRBF (.NET BinaryFormatter)** — Unity / Mono games. Every primitive parsed, grouped by class, named
+  even when the game wraps everything in `Observable<T>` or buries values inside `BigInteger`/`Decimal`.
+- **Protobuf** — schema-less wire-format walker. Works on any `.pb` file without `.proto` definitions.
+- **Base64-wrapped** versions of either — auto-decoded on read, re-encoded on save.
+- **JSON / XML** — syntax-aware editor.
+- **SQLite** — row-level table editor.
+- Anything else — hex viewer.
+
+Smart helpers in the NRBF/Protobuf editors:
+
+- **🔥 / 📈 / 💯 badges** flag fields whose names hit cheat keywords (in 9 languages), whose values are large
+  (≥ 1M), or whose values are round-looking (1000, 5000, …).
+- **By Value section** ranks the largest numeric fields when keyword scoring fails — your lifeline for
+  obfuscated saves.
+- **Compare** action diffs the current save against any backup or sibling slot. Pick the changes you want
+  pulled in. Pairing is by byte offset so it works through obfuscated/non-English names.
+- **Recents** on the home screen reopens recently-edited files in one tap.
+
+### Save / restore
+
+Every save backs up the original to this app's cache before overwriting. The target app gets force-stopped
+first so it reloads cleanly from disk. Writes are **atomic**: staged to a `.tmp` and `mv`'d into place, so a
+mid-write crash leaves the original intact.
+
+## Install
+
+### 1 · Download the APK
+Grab `app-release.apk` from the
+[**Releases page**](https://github.com/FZ1010/FingerTheGame/releases/latest).
+
+### 2 · Allow sideloading on your phone
+**Settings → Apps → Special access → Install unknown apps**, find your file manager / browser, turn on
+**Allow from this source**.
+
+### 3 · Install Shizuku
+FingerTheGame talks to other apps' files through Shizuku. Without it, Android won't let one app read
+another app's save data.
+
+- Get **Shizuku** from the
+  [Play Store](https://play.google.com/store/apps/details?id=moe.shizuku.privileged.api) or
+  [GitHub](https://github.com/RikkaApps/Shizuku/releases/latest).
+- Open Shizuku and follow its setup — easiest is **Wireless debugging** (no PC needed). One-time per phone.
+- Confirm "Shizuku is running" at the top of the Shizuku app.
+
+> If your phone reboots, Shizuku's wireless-debugging connection drops and needs to be re-paired in the
+> Shizuku app. There's no fix for that — it's an Android limitation.
+
+### 4 · Install FingerTheGame
+Open the APK on your phone, tap **Install**.
+
+### 5 · Grant permission
+Open **FingerTheGame**. The home shows the Shizuku status — tap **Grant** if it asks, then **Allow** in the
+popup. Status should read "Shizuku: ready".
+
+### 6 · Cheat
+- If your game has a recipe → tap it on the home screen. Done.
+- Otherwise → **Browse all installed apps** → pick the game → browse to `files/` → open the save file →
+  edit. Use **Save** when ready.
+
+## Contributing recipes
+
+The fastest way to grow this project is recipes. Open a PR adding `app/src/main/assets/recipes/<package>.json`:
+
+```json
+{
+  "package": "com.example.yourgame",
+  "label": "Your Game",
+  "version": 1,
+  "recipes": [
+    {
+      "id": "max_money",
+      "title": "💰 Max Money",
+      "description": "Sets coin balance to 1,000,000,000",
+      "files": [
+        {
+          "relativePath": "files/save.dat",
+          "format": "NRBF",
+          "edits": [
+            { "matchDisplayName": "coinAmount", "value": "1000000000" }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+`matchDisplayName` is a case-insensitive substring of the field's display name as the editor renders it
+(usually the property name, with `<…>k__BackingField` stripped). Use the manual editor first to find what
+the field is actually called.
+
+## How it works (deep dive)
+
+### NRBF editor
+
+The .NET BinaryFormatter parser walks the entire file and records every primitive's byte offset. Edits patch
+the existing buffer in place rather than re-serialising, so layout-changing operations (resizing strings, growing
+arrays) are intentionally not exposed.
+
+**Auto-collapsing wrapper structures.** NRBF burdens many values inside structural noise:
+
+- `System.Numerics.BigInteger` (`_sign` + `_bits`) → single decoded number
+- `System.Decimal` (4 packed Int32s) → editable BigDecimal
+- `System.DateTime` (Int64 dateData with Kind bits) → ISO-8601, Kind preserved on write
+- `System.TimeSpan` (Int64 ticks) → ISO-8601 duration
+- `KeyValuePair` dictionary entries get their key in the row label (`[5] = 0.75`)
+- `Observable<T>` / single-field wrappers borrow the meaningful name from the closest non-generic ancestor by
+  walking the inline context stack and the forward-reference graph
+
+**Field organisation:**
+
+- **⭐ Likely Cheat Targets** — cross-class section ranking fields by name + value heuristics
+- **🔢 By Value (largest first)** — fallback when keyword scoring finds nothing
+- **📦 \<ClassName\>** — every actual class in the file, "interesting" classes open by default
+- **🛠 System.\*** — collection types pushed to the bottom
+
+### Protobuf editor
+
+Schema-less wire-format walker. Auto-detects only when an end-to-end parse succeeds with sane field numbers.
+Editable: varints (when same byte-length), fixed32, fixed64. Length-delimited blobs editable when the new
+content is exactly the same byte size.
 
 ### Two-save diff
 
-When you have two snapshots of the same save (different slots, a backup, or before/after spending in-game),
-hit the **Compare** button in the top bar. The bottom sheet lists every sibling file plus this app's cached
-backups; pick one and a diff sheet shows every changed field with old → new values. Select the changes you
-want, hit **Apply**, and they patch into the current save (Save then writes them back).
+Pairs by byte offset so it works through obfuscated / non-English names. Compose the current save with any
+sibling file or app backup; pick the changes you want.
 
-Pairing is by structural byte offset — works even when names are obfuscated or in a language we don't recognise.
+### Architecture notes
 
-## Protobuf editor
-
-Schema-less wire-format walker. No `.proto` needed because the format is self-describing (`(field_number,
-wire_type)` tag pairs). Auto-detects only when an end-to-end parse succeeds with sane field numbers (95% rule).
-
-- **Varint** — int/uint/sint/bool/enum. Editable as long as the new value re-encodes to the same byte length.
-- **Fixed32** — fixed/float, always editable in place.
-- **Fixed64** — fixed/double, always editable in place. Display shows the raw int and the float interpretation
-  side by side so you can tell which it is.
-- **Length-delimited** — string/bytes/embedded message. Editable when the new content is exactly the same
-  byte length (resizing would shift later fields).
-
-The same two-save diff workflow works on protobuf files too.
-
-## Base64 wrapping
-
-Saves wrapped in base64 (a popular obfuscation among Unity games) are auto-detected, decoded for editing, and
-re-encoded on save. Detection is strict (charset, length, parses cleanly to one of the recognised inner
-formats) so plain text doesn't get false-positively unwrapped.
-
-## Architecture notes
-
-- Reads and writes go through `Shizuku.newProcess` (reflective — the public Shizuku API doesn't expose it).
-  Multi-MB writes pipe through stdin instead of being embedded in argv to dodge `ARG_MAX`.
-- Editors parse on `Dispatchers.Default`, debounce patch-application by 250 ms, and lazy-render rows in a
-  collapsed form to keep scroll smooth on saves with tens of thousands of fields.
-- The two-save diff pairs by byte offset, not by name — so it works through obfuscated/non-English naming.
+- Reads/writes go through `Shizuku.newProcess` (reflective — public Shizuku API doesn't expose it). Multi-MB
+  writes pipe through stdin instead of being embedded in argv to dodge `ARG_MAX`. Atomic via stage-then-mv.
+- Editors parse on `Dispatchers.Default`, debounce patch-application by 250 ms, lazy-render rows.
+- All shell calls drain stdout + stderr concurrently to avoid the chatty-stderr pipe-fill deadlock.
+- Path-taking calls reject `\n` / `\0` / control bytes / `..` segments before reaching a shell. Writes are
+  confined to `/sdcard/Android/data/<selectedPkg>/`.
+- Force-stop denylist for system / Play Store / Shizuku / banking-prefixed packages.
+- 64 MB hard cap on file reads (OOM guard), 10 MB warning.
 - A standalone `parser_test/` JVM project lets you reproduce format issues without an emulator:
   ```
   kotlinc parser_test/Main.kt parser_test/Crash.kt -include-runtime -d /tmp/crash.jar
   java -jar /tmp/crash.jar path/to/save.bin
-  # Or for the protobuf round-trip test:
-  kotlinc parser_test/ProtoCheck.kt -include-runtime -d /tmp/proto.jar
-  java -jar /tmp/proto.jar
   ```
-
-## Requirements
-
-- Android 11+ (the `/sdcard/Android/data/` lockdown is what makes Shizuku necessary)
-- Shizuku installed and running, with permission granted to this app
-
-## Install (step-by-step)
-
-### 1 · Download the APK
-Grab the latest `app-release.apk` from the
-[**Releases page**](https://github.com/FZ1010/FingerTheGame/releases/latest).
-
-### 2 · Allow sideloading
-On your phone, open **Settings → Apps → Special access → Install unknown apps**, find your file
-manager / browser, and turn on **Allow from this source**.
-
-### 3 · Install Shizuku
-FingerTheGame needs Shizuku to read other apps' files without root.
-
-- Install **Shizuku** from the [Play Store](https://play.google.com/store/apps/details?id=moe.shizuku.privileged.api)
-  or [GitHub](https://github.com/RikkaApps/Shizuku/releases/latest).
-- Open Shizuku and follow its setup. Two options:
-  - **Wireless debugging** (Android 11+, no PC needed) — easiest. Shizuku has a one-tap pairing flow.
-  - **Wired ADB** (`adb shell sh /sdcard/Android/data/moe.shizuku.privileged.api/start.sh`) — works after a reboot
-    only until you reboot again.
-- Confirm the top of the Shizuku app says **"Shizuku is running"**.
-
-### 4 · Install FingerTheGame
-Open the downloaded APK on your phone and tap **Install**.
-
-### 5 · Grant Shizuku permission
-Open **FingerTheGame**. The home screen shows the Shizuku status — it should say
-**"Shizuku: needs permission"** the first time. Tap **Grant**, then **Allow** in the popup.
-
-When the status reads **"Shizuku: ready"** you're good.
-
-### 6 · Edit a save
-1. Tap **Pick an app** and choose a game (apps with a data folder are flagged).
-2. Browse into `files/` (or wherever the save lives) and tap the save file.
-3. The format is auto-detected. For NRBF saves you'll see grouped sections — tap a row to expand,
-   type or use the quick-fill chips, hit **Save**.
-4. The app force-stops the target before writing so the game reloads from disk. A timestamped backup
-   of the original is kept under FingerTheGame's cache.
-
-After your first save, that file shows up in the **Recent** list on the home screen — one tap to reopen.
 
 ## Building from source
 
@@ -172,24 +185,22 @@ gradle :app:assembleDebug
 adb install -r --user 0 app/build/outputs/apk/debug/app-debug.apk
 ```
 
-`--user 0` matters on devices with Samsung Dual Messenger (user 95) — without it Android may pick a profile and
-install twice.
+`--user 0` matters on devices with Samsung Dual Messenger (user 95) — without it Android may pick a profile
+and install twice.
 
 ## Caveats
 
-- String / variable-length-blob editing is intentionally disabled — changing a string's length would shift
-  every following byte offset and require a full re-serialise.
-- The NRBF parser is best-effort: when it hits an unknown record type it stops gracefully and the editor shows
-  whatever fields were collected before the bail point.
-- Protobuf detection is heuristic. False positives are possible in theory; in practice the "must parse to end
-  with sane field numbers" filter rejects almost everything that isn't actually protobuf.
+- String / variable-length-blob editing is intentionally disabled — would shift later byte offsets.
+- The NRBF parser is best-effort: an unknown record type stops the walk and the editor shows what was
+  collected before that point.
+- Protobuf detection is heuristic. False positives are possible in theory; in practice the
+  "must parse to end with sane field numbers" filter rejects anything that isn't actually protobuf.
 - No root, no Frida, no live memory scanning — this only edits files. Anti-cheat detection on the file isn't
   defeated; that's not the goal.
-- `/data/data/<pkg>/` (where Android stores `shared_prefs/` and the SQLite databases for many apps) is
-  unreachable through Shizuku's `shell` uid on stock Android 11+. We can only see what's exposed under
-  `/sdcard/Android/data/<pkg>/`.
+- `/data/data/<pkg>/` (where `shared_prefs/` and many SQLite databases live) is unreachable through Shizuku's
+  shell uid on stock Android 11+. We can only see what's exposed under `/sdcard/Android/data/<pkg>/`.
 
 ## License
 
-Source-available — see [LICENSE](LICENSE). Short version: free to use, **not** for sale,
-**not** for redistribution or rebranding, contributions back to this repo are welcome.
+Source-available — see [LICENSE](LICENSE). Short version: free to use, **not** for sale, **not** for
+redistribution or rebranding, contributions back to this repo are welcome.
