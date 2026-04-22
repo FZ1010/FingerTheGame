@@ -292,6 +292,12 @@ private class NrbfWalker(val buf: ByteArray) {
      *  generic wrapper accessors. */
     private val context = ArrayDeque<Pair<String, String>>()
 
+    /** While reading the value of a KeyValuePair, this carries the key
+     *  rendered as a string ("[42]", "[\"sword\"]") so [bestField] can
+     *  borrow it as the row's display name — turning anonymous dictionary
+     *  rows into something readable. */
+    private var kvpKeyOverride: String? = null
+
     /** A back-reference edge: the target object id was reached from
      *  [ownerClass]'s [ownerMember] field, and the instance that held that
      *  field had object id [ownerObjId]. Walking [ownerObjId] back through
@@ -323,12 +329,16 @@ private class NrbfWalker(val buf: ByteArray) {
     private fun isGenericName(name: String): Boolean = name in genericFieldNames
 
     /** Resolve a field's effective (class, member) pair. Strategy:
-     *  1. If the supplied [memberName] is non-generic, keep it.
-     *  2. Walk up the inline [context] stack for a meaningful name.
-     *  3. Walk up the back-reference chain in [refOwners] — handles the
+     *  1. If we're inside a KeyValuePair read and the field's name is
+     *     generic, use the captured key (e.g. "[5]") so each dictionary
+     *     entry is individually identifiable.
+     *  2. If the supplied [memberName] is non-generic, keep it.
+     *  3. Walk up the inline [context] stack for a meaningful name.
+     *  4. Walk up the back-reference chain in [refOwners] — handles the
      *     forward-reference layout where the inline stack is empty by the
      *     time the value is parsed (Real War / Unity Observable<T>). */
     private fun bestField(parentClass: String, memberName: String): Pair<String, String> {
+        kvpKeyOverride?.let { if (isGenericName(memberName)) return parentClass to it }
         if (!isGenericName(memberName)) return parentClass to memberName
         for (i in context.indices.reversed()) {
             val (cls, mn) = context[i]
@@ -436,11 +446,83 @@ private class NrbfWalker(val buf: ByteArray) {
         if (isDecimalShape(cls)) { readDecimalInstance(cls); return }
         if (isDateTimeShape(cls)) { readDateTimeInstance(cls); return }
         if (isTimeSpanShape(cls)) { readTimeSpanInstance(cls); return }
+        if (isKeyValuePairShape(cls)) { readKeyValuePairInstance(cls); return }
         for (i in cls.memberNames.indices) {
             val bt = cls.binaryTypes[i]
             val mname = cls.memberNames[i]
             readMemberValue(cls.name, mname, bt, cls.addlPrim[i])
         }
+    }
+
+    /** A System.Collections.Generic.KeyValuePair<K,V> with the standard
+     *  `key` + `value` field pair. Generic key/value types vary, so we
+     *  match by name prefix + member shape. */
+    private fun isKeyValuePairShape(cls: ClassDefn): Boolean {
+        return cls.name.startsWith("System.Collections.Generic.KeyValuePair") &&
+               cls.memberNames.size == 2 &&
+               cls.memberNames[0] == "key" &&
+               cls.memberNames[1] == "value"
+    }
+
+    /** Read a KVP: extract the key as a string (without recording it as a
+     *  separate field), then read the value normally — [bestField] uses
+     *  [kvpKeyOverride] to label that value row as `[keyStr]`. */
+    private fun readKeyValuePairInstance(cls: ClassDefn) {
+        val keyStr = readKeyValueAsString(cls.binaryTypes[0], cls.addlPrim[0])
+        val saved = kvpKeyOverride
+        kvpKeyOverride = "[$keyStr]"
+        try {
+            readMemberValue(cls.name, cls.memberNames[1], cls.binaryTypes[1], cls.addlPrim[1])
+        } finally {
+            kvpKeyOverride = saved
+        }
+    }
+
+    /** Read a key value and render it as a printable string. Suppresses
+     *  any field side-effects from the read (the key is metadata for the
+     *  row label, not an editable field on its own). */
+    private fun readKeyValueAsString(bt: Int, addl: Int): String {
+        val savedFieldCount = fields.size
+        val keyStr = if (bt == 0) {
+            readInlinePrimitiveAsString(addl)
+        } else {
+            // Key is a class/array — its value is the next record. Pull a
+            // string out of the most common shapes (boxed primitive,
+            // inline string, or null/ref placeholder).
+            val rt = u8()
+            when (rt) {
+                8 -> { val pc = u8(); readInlinePrimitiveAsString(pc) }
+                6 -> { u32(); lpString() }                       // BinaryObjectString
+                9 -> { val ref = u32(); "ref#$ref" }             // MemberReference
+                10 -> "null"
+                else -> {
+                    runCatching { handleRecord(rt) }
+                    "?"
+                }
+            }
+        }
+        // Roll back any fields recorded as a side effect of the key parse —
+        // we don't want the key showing up as a separate editable row.
+        while (fields.size > savedFieldCount) fields.removeAt(fields.size - 1)
+        return keyStr
+    }
+
+    /** Read a primitive by type code, advancing pos but not recording a
+     *  field. Returns the primitive rendered as the most natural string. */
+    private fun readInlinePrimitiveAsString(pc: Int): String = when (pc) {
+        1 -> if (u8() != 0) "true" else "false"
+        2 -> u8().toString()
+        10 -> (buf[pos].toInt().also { pos++ }).toString()
+        7 -> i16().toString()
+        14 -> u16().toString()
+        8 -> i32().toString()
+        15 -> u32().toString()
+        9 -> i64().toString()
+        16 -> i64().toString()
+        11 -> f32().toString()
+        6 -> f64().toString()
+        18 -> lpString()
+        else -> "?"
     }
 
     /** .NET DateTime is a single Int64 `dateData` (top 2 bits = Kind,
