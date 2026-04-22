@@ -1,0 +1,32 @@
+# Build outputs
+.gradle/
+build/
+out/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+local.properties
+
+# APKs / signing
+*.apk
+*.aab
+*.keystore
+*.jks
+release/
+
+# Test/scratch artifacts from this session
+*.bin
+*.jar
+crash.log
+screen*.png
+sg*_*.png
+v[0-9]_*.png
+v[0-9][0-9]_*.png
+
+# OS
+.DS_Store
+Thumbs.db

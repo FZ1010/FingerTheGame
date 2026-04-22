@@ -1,0 +1,56 @@
+FingerTheGame License
+Source-Available · Non-Commercial · No-Redistribution
+
+Copyright (c) 2026 FZ1010
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to USE
+the Software for personal, non-commercial purposes, subject to all of the
+conditions below.
+
+1. USE. You may install, run, and use the Software on any device you control,
+   for any non-commercial purpose.
+
+2. NO COMMERCIAL USE. You may not sell, license, sublicense, rent, lease, or
+   otherwise exchange the Software, in whole or in part, in original or
+   modified form, for any monetary or commercial consideration. Bundling the
+   Software with a commercial product or service is also prohibited.
+
+3. NO REDISTRIBUTION. You may not publish, host, mirror, repackage, or
+   otherwise distribute the Software, in source or binary form, modified or
+   unmodified, to any third party. The sole exception is a Contribution
+   submitted under Section 4.
+
+4. CONTRIBUTIONS WELCOME. You may submit bug fixes, improvements, or new
+   features as pull requests to the original repository at
+   https://github.com/FZ1010/FingerTheGame. By submitting a Contribution you
+   grant the copyright holder a perpetual, irrevocable, worldwide,
+   royalty-free license to incorporate your Contribution into the Software
+   under this License, any future version of this License chosen by the
+   copyright holder, or any other terms the copyright holder selects.
+
+5. NO REBRANDING. You may not publish, distribute, host, or operate any
+   derivative work of the Software under a different name, brand, identifier,
+   or product offering, regardless of whether the derivative is offered for
+   compensation.
+
+6. NO TRADEMARK USE. The names "FingerTheGame", "FZ1010", and any associated
+   logos or marks are not licensed under this License. You may not use them
+   to endorse or promote derivative works without prior written permission
+   from the copyright holder.
+
+7. PRESERVE NOTICES. You must preserve all copyright notices, this License
+   text, and any author attribution in any copy of the Software you retain
+   under Section 1.
+
+8. NO WARRANTY. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+   KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN
+   NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+   DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR
+   OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE
+   USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+9. TERMINATION. Any breach of this License automatically terminates your
+   rights under it. Upon termination you must cease all use of the Software
+   and destroy any copies in your possession.
