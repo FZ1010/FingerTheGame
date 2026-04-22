@@ -21,19 +21,27 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.fingerthegame.app.util.BigIntLayout
+import com.fingerthegame.app.util.DecimalLayout
 import com.fingerthegame.app.util.NrbfDocument
 import com.fingerthegame.app.util.NrbfField
 import com.fingerthegame.app.util.NrbfType
+import java.math.BigDecimal
 import java.math.BigInteger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.withContext
 
-// Universal game-cheat vocabulary — no per-game words like "happiness" or
-// "athleticism". Anything beyond this should be discovered by browsing the
-// per-class sections, not by us hardcoding it.
+// Universal game-cheat vocabulary across the languages most mobile games
+// ship in. No per-game stat names — those should be discovered by browsing
+// the per-class sections, not hardcoded.
+//
+// All words are lowercased; matching is substring against the lowercased
+// field name. Non-ASCII (CJK / Cyrillic) entries match identically because
+// `lowercase()` is a no-op on those.
 private val HOT_KEYWORDS = listOf(
+    // English
     "money", "coin", "cash", "gold", "gem", "diamond", "balance", "bank",
     "wallet", "wealth", "currency", "dollar", "credit", "token", "ticket",
     "level", "xp", "exp", "experience", "score", "point", "star", "rank",
@@ -41,14 +49,59 @@ private val HOT_KEYWORDS = listOf(
     "damage", "attack", "defense", "armor", "weapon",
     "premium", "vip", "unlock", "owned", "skip", "subscription",
     "ammo", "bullet", "fuel",
+    // Japanese
+    "金", "お金", "銭", "コイン", "ゴールド", "ジェム", "ダイヤ",
+    "レベル", "経験", "体力", "攻撃", "防御",
+    // Korean
+    "돈", "골드", "보석", "다이아", "레벨", "경험", "체력", "공격", "방어",
+    // Simplified Chinese
+    "钱", "金币", "金钱", "钻石", "宝石", "等级", "经验", "生命", "攻击", "防御", "伤害",
+    // Spanish
+    "dinero", "oro", "moneda", "joya", "nivel", "vida", "salud", "ataque", "daño",
+    // Portuguese
+    "dinheiro", "ouro", "moeda", "joia", "nível", "saúde", "vida", "dano", "ataque",
+    // German
+    "geld", "münze", "diamant", "edelstein", "stufe", "leben", "schaden", "angriff",
+    // French
+    "argent", "pièce", "diamant", "niveau", "vie", "santé", "dégât", "attaque",
+    // Russian
+    "деньги", "золото", "монета", "алмаз", "уровень", "опыт", "здоровье", "урон", "атака",
 )
 
-private fun scoreOf(nameLower: String, type: NrbfType): Int {
+private fun scoreOf(nameLower: String, type: NrbfType, value: Any?): Int {
     var s = 0
     for (k in HOT_KEYWORDS) if (nameLower.contains(k)) s += 10
     if (type != NrbfType.STRING && type != NrbfType.BOOL) s += 3
     if (nameLower.length >= 6) s += 1
+
+    // Value-based heuristics — game counters/currencies tend to be either
+    // human-round defaults (100, 1000, 5000) or large magnitudes (a player
+    // who's been grinding has ~10^6 of something). These signals fire even
+    // when the field name is obfuscated or in an unfamiliar language.
+    val abs = magnitudeOrNull(value) ?: return s
+    if (abs >= 1_000_000L) s += 6
+    else if (abs >= 1_000L) s += 3
+    if (looksRound(abs)) s += 4
     return s
+}
+
+private fun magnitudeOrNull(value: Any?): Long? = when (value) {
+    is Number -> {
+        val d = value.toDouble()
+        if (d.isFinite()) kotlin.math.abs(d.toLong()) else null
+    }
+    is BigInteger -> value.abs().let { if (it.bitLength() <= 62) it.toLong() else Long.MAX_VALUE }
+    is BigDecimal -> value.abs().toBigInteger().let { if (it.bitLength() <= 62) it.toLong() else Long.MAX_VALUE }
+    else -> null
+}
+
+/** Round-looking numbers: 1, 10, 50, 100, 1000, 5000, 1_000_000, etc. — a
+ *  single non-zero digit followed by any number of zeros. Catches the most
+ *  obvious "human chose this default" values across cultures. */
+private fun looksRound(abs: Long): Boolean {
+    if (abs <= 0) return false
+    val s = abs.toString()
+    return s.length >= 2 && s.drop(1).all { it == '0' }
 }
 
 private data class IndexedField(
@@ -151,7 +204,7 @@ fun NrbfFieldsEditor(
             val doc = NrbfDocument(bytes)
             val indexed = doc.fields.map { f ->
                 val nl = f.displayName.lowercase()
-                IndexedField(f, nl, f.className.lowercase(), scoreOf(nl, f.type))
+                IndexedField(f, nl, f.className.lowercase(), scoreOf(nl, f.type, f.originalValue))
             }
             EditorState(
                 doc = doc,
@@ -233,6 +286,9 @@ private fun EditorContent(
                         NrbfType.F32, NrbfType.F64 -> str.toDoubleOrNull() ?: return@mapNotNull null
                         NrbfType.STRING -> str
                         NrbfType.BIGINT -> str.trim().toBigIntegerOrNull() ?: return@mapNotNull null
+                        NrbfType.DECIMAL -> str.trim().toBigDecimalOrNull() ?: return@mapNotNull null
+                        NrbfType.DATETIME -> str            // parsed in writeValue
+                        NrbfType.TIMESPAN -> str            // parsed in writeValue
                         else -> str.toLongOrNull() ?: return@mapNotNull null
                     }
                     off to v
@@ -499,7 +555,8 @@ private fun FieldRow(
                     keyboardOptions = KeyboardOptions(
                         keyboardType = when (field.type) {
                             NrbfType.BOOL -> KeyboardType.Text
-                            NrbfType.F32, NrbfType.F64 -> KeyboardType.Decimal
+                            NrbfType.F32, NrbfType.F64, NrbfType.DECIMAL -> KeyboardType.Decimal
+                            NrbfType.DATETIME, NrbfType.TIMESPAN -> KeyboardType.Text
                             else -> KeyboardType.Number   // BIGINT also wants the number pad
                         }
                     ),
@@ -528,6 +585,10 @@ private fun QuickFillButtons(field: NrbfField, currentInput: String?, onEdit: (S
         if (field.type == NrbfType.BOOL) {
             val cur = parseBool(currentInput) ?: (field.originalValue as? Boolean) ?: false
             QuickButton(if (cur) "→ false" else "→ true") { onEdit(if (cur) "false" else "true") }
+        } else if (field.type == NrbfType.DATETIME || field.type == NrbfType.TIMESPAN) {
+            // Date/time fields don't get arithmetic chips — they have their
+            // own MAX (sentinel max date / 24h span).
+            QuickButton("MAX") { onEdit(maxValueFor(field)) }
         } else {
             QuickButton("MAX") { onEdit(maxValueFor(field)) }
             QuickButton("999") { onEdit("999") }
@@ -584,6 +645,9 @@ private fun maxValueFor(f: NrbfField): String = when (f.type) {
     NrbfType.I64, NrbfType.U64 -> Long.MAX_VALUE.toString()
     NrbfType.F32, NrbfType.F64 -> "9999999"
     NrbfType.BIGINT -> bigIntMaxFor(f).toString()
+    NrbfType.DECIMAL -> decimalMaxFor(f).toString()
+    NrbfType.DATETIME -> "9999-12-31T23:59:59Z"
+    NrbfType.TIMESPAN -> "PT24H"
     NrbfType.STRING -> "0"
 }
 
@@ -593,7 +657,7 @@ private fun maxValueFor(f: NrbfField): String = when (f.type) {
  * If `_bits` was empty (sign-only), Int32.MAX is the ceiling.
  */
 private fun bigIntMaxFor(f: NrbfField): BigInteger {
-    val layout = f.meta as? com.fingerthegame.app.util.BigIntLayout
+    val layout = f.meta as? BigIntLayout
         ?: return BigInteger.valueOf(Int.MAX_VALUE.toLong())
     return if (layout.bitsLength == 0) {
         BigInteger.valueOf(Int.MAX_VALUE.toLong())
@@ -601,6 +665,18 @@ private fun bigIntMaxFor(f: NrbfField): BigInteger {
         // 2^(bitsLength * 32) - 1, the largest unsigned value that fits.
         BigInteger.ONE.shiftLeft(layout.bitsLength * 32).subtract(BigInteger.ONE)
     }
+}
+
+/**
+ * MAX for a Decimal preserves the original scale (so editing $9.99 caps at
+ * 9999.99 rather than producing a scaleless 9999999). The mantissa max is
+ * 2^96 - 1 ≈ 7.9 × 10^28, but exposing the full ceiling spooks users —
+ * use 10^15 as a friendly cap, then divide by 10^scale.
+ */
+private fun decimalMaxFor(f: NrbfField): BigDecimal {
+    val orig = f.originalValue as? BigDecimal ?: return BigDecimal("999999999")
+    val scale = orig.scale()
+    return BigDecimal(BigInteger.TEN.pow(15), scale)
 }
 
 @Composable

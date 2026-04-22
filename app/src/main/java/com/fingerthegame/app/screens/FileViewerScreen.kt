@@ -14,7 +14,11 @@ import com.fingerthegame.app.editors.SqliteEditor
 import com.fingerthegame.app.editors.TextEditor
 import com.fingerthegame.app.util.Format
 import com.fingerthegame.app.util.FormatDetect
+import com.fingerthegame.app.util.NrbfDiff
+import com.fingerthegame.app.util.NrbfDiffEntry
+import com.fingerthegame.app.util.NrbfDocument
 import com.fingerthegame.app.util.ShizukuExec
+import com.fingerthegame.app.util.Unwrapped
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -34,16 +38,29 @@ fun FileViewerScreen(
     var original by remember { mutableStateOf<ByteArray?>(null) }
     var current by remember { mutableStateOf<ByteArray?>(null) }
     var format by remember { mutableStateOf(Format.BINARY) }
+    // Captured wrapping (e.g. base64) so we can re-apply on save.
+    var wrap by remember { mutableStateOf<Unwrapped?>(null) }
     var busy by remember { mutableStateOf(false) }
+    // Diff workflow state.
+    var showComparePicker by remember { mutableStateOf(false) }
+    var diffEntries by remember { mutableStateOf<List<NrbfDiffEntry>?>(null) }
+    var comparePath by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(path) {
         loading = true
         runCatching {
-            withContext(Dispatchers.IO) { ShizukuExec.readFile(path) }
-        }.onSuccess { bytes ->
-            original = bytes
-            current = bytes
-            format = FormatDetect.detect(bytes)
+            withContext(Dispatchers.IO) {
+                val raw = ShizukuExec.readFile(path)
+                FormatDetect.unwrap(raw)
+            }
+        }.onSuccess { unwrapped ->
+            original = unwrapped.effective
+            current = unwrapped.effective
+            format = unwrapped.format
+            wrap = unwrapped
+            if (unwrapped.wrappedAsBase64) {
+                snackbarHost.showSnackbar("Detected base64 wrapper · decoded inside")
+            }
         }.onFailure {
             snackbarHost.showSnackbar("Read failed: ${it.message ?: "unknown"}")
         }
@@ -66,6 +83,11 @@ fun FileViewerScreen(
                     }
                 },
                 navigationIcon = { TextButton(onClick = onBack) { Text("Back") } },
+                actions = {
+                    if (format == Format.NRBF && current != null) {
+                        TextButton(onClick = { showComparePicker = true }) { Text("Compare") }
+                    }
+                },
             )
         },
         bottomBar = {
@@ -84,7 +106,8 @@ fun FileViewerScreen(
                                     }
                                     withContext(Dispatchers.IO) {
                                         ShizukuExec.forceStop(pkg)
-                                        ShizukuExec.writeFile(path, cur)
+                                        val toWrite = wrap?.rewrap(cur) ?: cur
+                                        ShizukuExec.writeFile(path, toWrite)
                                     }
                                     original = cur
                                     snackbarHost.showSnackbar(
@@ -123,6 +146,57 @@ fun FileViewerScreen(
                     onUpdate = { current = it },
                 )
             }
+        }
+
+        if (showComparePicker) {
+            ComparePickerSheet(
+                currentPath = path,
+                cacheDir = ctx.cacheDir,
+                onDismiss = { showComparePicker = false },
+                onPick = { picked ->
+                    showComparePicker = false
+                    scope.launch {
+                        val orig = original ?: return@launch
+                        runCatching {
+                            withContext(Dispatchers.IO) {
+                                val raw = if (picked.startsWith("/data/data") || picked.startsWith(ctx.cacheDir.absolutePath))
+                                    java.io.File(picked).readBytes()
+                                else
+                                    ShizukuExec.readFile(picked)
+                                val unwrapped = FormatDetect.unwrap(raw)
+                                val docCur = NrbfDocument(orig)
+                                val docOther = NrbfDocument(unwrapped.effective)
+                                NrbfDiff.compute(docCur, docOther)
+                            }
+                        }.onSuccess {
+                            diffEntries = it
+                            comparePath = picked
+                        }.onFailure {
+                            snackbarHost.showSnackbar("Compare failed: ${it.message ?: "unknown"}")
+                        }
+                    }
+                },
+            )
+        }
+
+        diffEntries?.let { entries ->
+            DiffSheet(
+                diff = entries,
+                comparisonName = comparePath ?: "",
+                onApply = { selected ->
+                    diffEntries = null
+                    val orig = original ?: return@DiffSheet
+                    val patches = selected.associate { it.field.offset to it.newValue }
+                    if (patches.isNotEmpty()) {
+                        val doc = NrbfDocument(orig)
+                        current = doc.applyPatches(patches)
+                        scope.launch {
+                            snackbarHost.showSnackbar("Applied ${patches.size} change${if (patches.size == 1) "" else "s"} — Save to write")
+                        }
+                    }
+                },
+                onDismiss = { diffEntries = null },
+            )
         }
     }
 }

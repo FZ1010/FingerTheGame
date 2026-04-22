@@ -1,5 +1,6 @@
 package com.fingerthegame.app.util
 
+import java.math.BigDecimal
 import java.math.BigInteger
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -17,14 +18,15 @@ import java.nio.ByteOrder
  * stops gracefully and exposes whatever fields it found up to that point.
  */
 enum class NrbfType {
-    BOOL, BYTE, SBYTE, I16, U16, I32, U32, I64, U64, F32, F64, STRING, BIGINT;
+    BOOL, BYTE, SBYTE, I16, U16, I32, U32, I64, U64, F32, F64,
+    STRING, BIGINT, DECIMAL, DATETIME, TIMESPAN;
 
     val byteWidth: Int get() = when (this) {
         BOOL, BYTE, SBYTE -> 1
         I16, U16 -> 2
         I32, U32, F32 -> 4
-        I64, U64, F64 -> 8
-        STRING, BIGINT -> -1
+        I64, U64, F64, DATETIME, TIMESPAN -> 8
+        STRING, BIGINT, DECIMAL -> -1
     }
 }
 
@@ -36,6 +38,24 @@ enum class NrbfType {
  * `_sign` *is* the value). `bitsLength` counts UInt32 elements (4 bytes each).
  */
 data class BigIntLayout(val signOffset: Int, val bitsOffset: Int, val bitsLength: Int)
+
+/**
+ * Layout metadata for a synthesized System.Decimal field. .NET serializes
+ * Decimal as 4 Int32 fields (`flags`, `hi`, `lo`, `mid` — order in the
+ * stream depends on the runtime's field declaration order, so we capture
+ * each by individual offset rather than assuming).
+ *
+ *  - `flags`: bit 31 = sign, bits 16–23 = scale (decimal places, 0–28)
+ *  - `(hi, mid, lo)`: 96-bit unsigned mantissa, little-endian by uint32
+ */
+data class DecimalLayout(val flagsOff: Int, val hiOff: Int, val midOff: Int, val loOff: Int)
+
+/** Layout for a synthesized DateTime field. Kind bits live in the top 2
+ *  bits of dateData; we preserve them across edits. */
+data class DateTimeLayout(val dateDataOff: Int, val originalKindBits: Long)
+
+/** Layout for a synthesized TimeSpan field — just the int64 offset. */
+data class TimeSpanLayout(val ticksOff: Int)
 
 data class NrbfField(
     val id: Long,
@@ -102,7 +122,76 @@ class NrbfDocument(val bytes: ByteArray) {
                 val layout = f.meta as? BigIntLayout ?: return
                 writeBigInt(bb, layout, raw.asBigInteger())
             }
+            NrbfType.DECIMAL -> {
+                val layout = f.meta as? DecimalLayout ?: return
+                writeDecimal(bb, layout, raw.asBigDecimal())
+            }
+            NrbfType.DATETIME -> {
+                val layout = f.meta as? DateTimeLayout ?: return
+                val ticks = parseDateTimeToTicks(raw.toString())
+                // Re-pack with the original Kind bits so a UTC save stays UTC.
+                bb.putLong(layout.dateDataOff, layout.originalKindBits or (ticks and 0x3FFFFFFFFFFFFFFFL))
+            }
+            NrbfType.TIMESPAN -> {
+                val layout = f.meta as? TimeSpanLayout ?: return
+                bb.putLong(layout.ticksOff, parseTimeSpanToTicks(raw.toString()))
+            }
         }
+    }
+
+    /** Parse an ISO-8601 timestamp back into .NET ticks (100-ns units since
+     *  0001-01-01 UTC). Tries Instant first, then LocalDateTime as UTC. */
+    private fun parseDateTimeToTicks(text: String): Long {
+        val s = text.trim()
+        val instant = runCatching { java.time.Instant.parse(s) }.getOrNull()
+            ?: runCatching {
+                java.time.LocalDateTime.parse(s).toInstant(java.time.ZoneOffset.UTC)
+            }.getOrNull()
+            ?: error("can't parse '$s' as ISO-8601 datetime")
+        // .NET epoch = 0001-01-01 UTC; Unix epoch = 1970-01-01 UTC.
+        val secondsBetween = 62135596800L
+        return (instant.epochSecond + secondsBetween) * 10_000_000L + (instant.nano / 100L)
+    }
+
+    /** Accept ISO-8601 duration ("PT1H30M"), or "1d 02:34:56(.789)", or
+     *  raw long ticks. */
+    private fun parseTimeSpanToTicks(text: String): Long {
+        val s = text.trim()
+        s.toLongOrNull()?.let { return it }
+        runCatching { java.time.Duration.parse(s) }.getOrNull()
+            ?.let { return it.seconds * 10_000_000L + it.nano / 100L }
+        // Loose "Xd HH:MM:SS(.fraction)" parser.
+        val re = Regex("""(?:(\d+)d\s+)?(\d+):(\d+)(?::(\d+)(?:\.(\d+))?)?""")
+        val m = re.matchEntire(s) ?: error("can't parse '$s' as duration")
+        val (d, h, mi, sec, frac) = m.destructured
+        val days = d.toLongOrNull() ?: 0L
+        val hours = h.toLong()
+        val mins = mi.toLong()
+        val secs = sec.toLongOrNull() ?: 0L
+        val fracTicks = if (frac.isNotEmpty()) {
+            val padded = frac.padEnd(7, '0').take(7)
+            padded.toLong()
+        } else 0L
+        val totalSecs = days * 86_400 + hours * 3_600 + mins * 60 + secs
+        return totalSecs * 10_000_000L + fracTicks
+    }
+
+    private fun writeDecimal(bb: ByteBuffer, layout: DecimalLayout, value: BigDecimal) {
+        val unscaled = value.unscaledValue()
+        val scale = value.scale()
+        require(scale in 0..28) { "Decimal scale $scale out of [0,28]" }
+        val mag = unscaled.abs()
+        require(mag.bitLength() <= 96) { "Decimal mantissa exceeds 96 bits" }
+        val mask32 = BigInteger.valueOf(0xFFFFFFFFL)
+        val lo = mag.and(mask32).toLong().toInt()
+        val mid = mag.shiftRight(32).and(mask32).toLong().toInt()
+        val hi = mag.shiftRight(64).and(mask32).toLong().toInt()
+        val sign = if (unscaled.signum() < 0) 1 else 0
+        val flags = (sign shl 31) or (scale shl 16)
+        bb.putInt(layout.flagsOff, flags)
+        bb.putInt(layout.hiOff, hi)
+        bb.putInt(layout.midOff, mid)
+        bb.putInt(layout.loOff, lo)
     }
 
     private fun writeBigInt(bb: ByteBuffer, layout: BigIntLayout, value: BigInteger) {
@@ -168,10 +257,19 @@ class NrbfDocument(val bytes: ByteArray) {
     }
     private fun Any.asBigInteger(): BigInteger = when (this) {
         is BigInteger -> this
+        is BigDecimal -> this.toBigInteger()
         is Number -> BigInteger.valueOf(this.toLong())
         is Boolean -> if (this) BigInteger.ONE else BigInteger.ZERO
         is String -> this.trim().toBigIntegerOrNull() ?: BigInteger.ZERO
         else -> BigInteger.ZERO
+    }
+    private fun Any.asBigDecimal(): BigDecimal = when (this) {
+        is BigDecimal -> this
+        is BigInteger -> BigDecimal(this)
+        is Number -> BigDecimal.valueOf(this.toDouble())
+        is Boolean -> if (this) BigDecimal.ONE else BigDecimal.ZERO
+        is String -> this.trim().toBigDecimalOrNull() ?: BigDecimal.ZERO
+        else -> BigDecimal.ZERO
     }
 }
 
@@ -189,11 +287,28 @@ private class NrbfWalker(val buf: ByteArray) {
     val classCounts = mutableMapOf<String, Int>()
     var nextId = 0L
 
-    /** Stack of (parent class name, member name) pairs traversed to reach the
-     *  current record. Lets us un-bury values stuck inside generic wrapper
-     *  classes (`IntObservable.ObservedValue`, `Wrapper._value`, …) by
-     *  borrowing the meaningful name from the first non-generic ancestor. */
+    /** Stack of (parent class name, member name) pairs traversed via inline
+     *  records — used as a first attempt to un-bury values stuck inside
+     *  generic wrapper accessors. */
     private val context = ArrayDeque<Pair<String, String>>()
+
+    /** A back-reference edge: the target object id was reached from
+     *  [ownerClass]'s [ownerMember] field, and the instance that held that
+     *  field had object id [ownerObjId]. Walking [ownerObjId] back through
+     *  [refOwners] reconstructs the semantic chain through nested wrappers. */
+    private data class RefEdge(val ownerClass: String, val ownerMember: String, val ownerObjId: Long)
+
+    /** Object-graph back-references for forward-serialized payloads. Real
+     *  War lays out PersistentData first with its members as
+     *  MemberReferences and dumps the referenced wrappers afterwards as
+     *  standalone records. By the time we parse the inner BigInteger the
+     *  inline [context] stack is empty — refOwners lets us walk back. */
+    private val refOwners = HashMap<Long, RefEdge>()
+
+    /** Object id of the next record we're about to parse. Set when a record
+     *  type that carries an obj id is read; read by [readBigIntegerInstance]
+     *  and similar synthesizers. */
+    private var pendingObjId: Long = 0L
 
     /** Wrapper-internal names that carry no semantic information on their
      *  own — when a recorded field uses one of these we should look further
@@ -207,14 +322,24 @@ private class NrbfWalker(val buf: ByteArray) {
 
     private fun isGenericName(name: String): Boolean = name in genericFieldNames
 
-    /** Resolve a field's effective (class, member) pair: keep the supplied
-     *  values if [memberName] is meaningful, otherwise borrow the closest
-     *  non-generic name from the ancestor stack. */
+    /** Resolve a field's effective (class, member) pair. Strategy:
+     *  1. If the supplied [memberName] is non-generic, keep it.
+     *  2. Walk up the inline [context] stack for a meaningful name.
+     *  3. Walk up the back-reference chain in [refOwners] — handles the
+     *     forward-reference layout where the inline stack is empty by the
+     *     time the value is parsed (Real War / Unity Observable<T>). */
     private fun bestField(parentClass: String, memberName: String): Pair<String, String> {
         if (!isGenericName(memberName)) return parentClass to memberName
         for (i in context.indices.reversed()) {
             val (cls, mn) = context[i]
             if (!isGenericName(mn)) return cls to mn
+        }
+        var cursor: Long = pendingObjId
+        val seen = HashSet<Long>()
+        while (cursor != 0L && seen.add(cursor)) {
+            val edge = refOwners[cursor] ?: break
+            if (!isGenericName(edge.ownerMember)) return edge.ownerClass to edge.ownerMember
+            cursor = edge.ownerObjId
         }
         return parentClass to memberName
     }
@@ -241,7 +366,13 @@ private class NrbfWalker(val buf: ByteArray) {
             16 -> readArraySingleObject()
             17 -> readArraySingleString()
             8 -> readMemberPrimitiveTyped()
-            9 -> u32()                               // MemberReference
+            9 -> {                                    // MemberReference
+                val targetId = u32()
+                val owner = context.lastOrNull()
+                if (owner != null) {
+                    refOwners[targetId] = RefEdge(owner.first, owner.second, pendingObjId)
+                }
+            }
             10 -> {}                                  // ObjectNull
             13 -> u8()                                // ObjectNullMultiple256
             14 -> u32()                               // ObjectNullMultiple
@@ -260,14 +391,29 @@ private class NrbfWalker(val buf: ByteArray) {
         if (!systemLib) u32()
         val cls = ClassDefn(name, mnames, btypes, addl)
         classes[objId] = cls
-        readInstance(cls)
+        recordOwnership(objId)
+        val saved = pendingObjId
+        pendingObjId = objId
+        try { readInstance(cls) } finally { pendingObjId = saved }
     }
 
     private fun readClassWithId() {
-        u32()                           // new obj id (we don't use it)
+        val newId = u32()
         val metaId = u32()
         val cls = classes[metaId] ?: error("ClassWithId references unknown class $metaId")
-        readInstance(cls)
+        recordOwnership(newId)
+        val saved = pendingObjId
+        pendingObjId = newId
+        try { readInstance(cls) } finally { pendingObjId = saved }
+    }
+
+    /** When a new object is parsed inline inside a member traversal, link it
+     *  back to the containing (class, member) so the bestField chain walk
+     *  can climb out of nested wrapper classes. */
+    private fun recordOwnership(newObjId: Long) {
+        val owner = context.lastOrNull() ?: return
+        // Don't clobber an existing entry recorded earlier (e.g. via MemberRef).
+        refOwners.putIfAbsent(newObjId, RefEdge(owner.first, owner.second, pendingObjId))
     }
 
     private fun consumeAddlInfo(bt: Int, addl: IntArray, i: Int) {
@@ -286,15 +432,153 @@ private class NrbfWalker(val buf: ByteArray) {
 
     private fun readInstance(cls: ClassDefn) {
         classCounts.merge(cls.name, 1) { a, _ -> a + 1 }
-        if (isBigIntegerShape(cls)) {
-            readBigIntegerInstance(cls)
-            return
-        }
+        if (isBigIntegerShape(cls)) { readBigIntegerInstance(cls); return }
+        if (isDecimalShape(cls)) { readDecimalInstance(cls); return }
+        if (isDateTimeShape(cls)) { readDateTimeInstance(cls); return }
+        if (isTimeSpanShape(cls)) { readTimeSpanInstance(cls); return }
         for (i in cls.memberNames.indices) {
             val bt = cls.binaryTypes[i]
             val mname = cls.memberNames[i]
             readMemberValue(cls.name, mname, bt, cls.addlPrim[i])
         }
+    }
+
+    /** .NET DateTime is a single Int64 `dateData` (top 2 bits = Kind,
+     *  bottom 62 = ticks since 0001-01-01). Some serializers use `ticks`
+     *  as the field name instead — accept both. */
+    private fun isDateTimeShape(cls: ClassDefn): Boolean {
+        if (cls.name != "System.DateTime") return false
+        if (cls.memberNames.size != 1) return false
+        val n = cls.memberNames[0].lowercase()
+        if (n != "datedata" && n != "_datedata" && n != "ticks" && n != "_ticks") return false
+        return cls.binaryTypes[0] == 0 && cls.addlPrim[0] == 16     // PrimitiveTypeEnum 16 = UInt64 (also matches Int64 use of 9)
+                || cls.binaryTypes[0] == 0 && cls.addlPrim[0] == 9
+    }
+
+    private fun readDateTimeInstance(cls: ClassDefn) {
+        val off = pos
+        val raw = i64()                                              // dateData
+        val kindBits = raw and 0xC000000000000000UL.toLong()
+        val ticks = raw and 0x3FFFFFFFFFFFFFFFL
+        val display = formatDotNetTicksAsIso(ticks)
+        val (eCls, eName) = bestField(cls.name, "value")
+        fields.add(NrbfField(
+            id = nextId++,
+            className = eCls,
+            memberName = eName,
+            offset = off,
+            type = NrbfType.DATETIME,
+            originalValue = display,
+            meta = DateTimeLayout(off, kindBits),
+        ))
+    }
+
+    /** .NET TimeSpan is a single Int64 `_ticks` (100-ns intervals). */
+    private fun isTimeSpanShape(cls: ClassDefn): Boolean {
+        if (cls.name != "System.TimeSpan") return false
+        if (cls.memberNames.size != 1) return false
+        val n = cls.memberNames[0].lowercase()
+        if (n != "_ticks" && n != "ticks") return false
+        return cls.binaryTypes[0] == 0 && cls.addlPrim[0] == 9
+    }
+
+    private fun readTimeSpanInstance(cls: ClassDefn) {
+        val off = pos
+        val ticks = i64()
+        val display = formatTicksAsDuration(ticks)
+        val (eCls, eName) = bestField(cls.name, "value")
+        fields.add(NrbfField(
+            id = nextId++,
+            className = eCls,
+            memberName = eName,
+            offset = off,
+            type = NrbfType.TIMESPAN,
+            originalValue = display,
+            meta = TimeSpanLayout(off),
+        ))
+    }
+
+    private fun formatDotNetTicksAsIso(ticks: Long): String {
+        if (ticks <= 0) return "0001-01-01T00:00:00Z"
+        val secondsTotal = ticks / 10_000_000L
+        val nanos = ((ticks % 10_000_000L) * 100L).toInt()
+        val secondsSinceUnix = secondsTotal - 62135596800L
+        return runCatching {
+            java.time.Instant.ofEpochSecond(secondsSinceUnix, nanos.toLong()).toString()
+        }.getOrDefault("ticks=$ticks")
+    }
+
+    private fun formatTicksAsDuration(ticks: Long): String {
+        val totalNanos = ticks * 100L
+        return runCatching { java.time.Duration.ofNanos(totalNanos).toString() }
+            .getOrDefault("ticks=$ticks")
+    }
+
+    /** .NET Decimal serializes as 4 Int32 fields. The runtime field order
+     *  depends on .NET version (`flags,hi,lo,mid` historically), so we
+     *  match by class name + count + types and identify each field by name
+     *  later in [readDecimalInstance]. */
+    private fun isDecimalShape(cls: ClassDefn): Boolean {
+        if (cls.name != "System.Decimal") return false
+        if (cls.memberNames.size != 4) return false
+        for (i in 0 until 4) {
+            if (cls.binaryTypes[i] != 0) return false       // primitive
+            if (cls.addlPrim[i] != 8) return false           // Int32
+        }
+        return true
+    }
+
+    private fun readDecimalInstance(cls: ClassDefn) {
+        // Walk the four Int32s in stream order, capturing each offset+value;
+        // then map them to (flags, hi, mid, lo) by member name (case-
+        // insensitive, with optional underscore prefix).
+        val offs = IntArray(4)
+        val vals = IntArray(4)
+        for (i in 0 until 4) {
+            offs[i] = pos
+            vals[i] = i32()
+        }
+        fun indexOf(vararg candidates: String): Int {
+            for (c in candidates) {
+                val i = cls.memberNames.indexOfFirst { it.equals(c, ignoreCase = true) }
+                if (i >= 0) return i
+            }
+            return -1
+        }
+        val fi = indexOf("flags", "_flags")
+        val hi = indexOf("hi", "_hi")
+        val lo = indexOf("lo", "_lo")
+        val mi = indexOf("mid", "_mid")
+        if (fi < 0 || hi < 0 || lo < 0 || mi < 0) {
+            // Field naming we don't recognise — fall back to recording the
+            // four ints as-is so the user can still see them.
+            for (i in 0 until 4) record(cls.name, cls.memberNames[i], offs[i], NrbfType.I32, vals[i].toLong())
+            return
+        }
+
+        val value = decodeDecimal(vals[fi], vals[hi], vals[lo], vals[mi])
+        val (eCls, eName) = bestField(cls.name, "value")
+        val layout = DecimalLayout(flagsOff = offs[fi], hiOff = offs[hi], midOff = offs[mi], loOff = offs[lo])
+        fields.add(NrbfField(
+            id = nextId++,
+            className = eCls,
+            memberName = eName,
+            offset = offs[fi],
+            type = NrbfType.DECIMAL,
+            originalValue = value,
+            meta = layout,
+        ))
+    }
+
+    private fun decodeDecimal(flags: Int, hi: Int, lo: Int, mid: Int): BigDecimal {
+        val sign = (flags ushr 31) and 1
+        val scale = (flags ushr 16) and 0xFF
+        val mask32 = BigInteger.valueOf(0xFFFFFFFFL)
+        val unscaled = BigInteger.valueOf(hi.toLong() and 0xFFFFFFFFL).shiftLeft(64)
+            .or(BigInteger.valueOf(mid.toLong() and 0xFFFFFFFFL).shiftLeft(32))
+            .or(BigInteger.valueOf(lo.toLong() and 0xFFFFFFFFL))
+        val signed = if (sign != 0) unscaled.negate() else unscaled
+        return BigDecimal(signed, scale)
     }
 
     private fun isBigIntegerShape(cls: ClassDefn): Boolean {

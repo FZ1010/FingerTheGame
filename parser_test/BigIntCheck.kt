@@ -22,9 +22,10 @@ private val GENERIC = setOf(
     "item", "Item", "_item", "current", "Current",
 )
 
-private enum class T { BOOL, BYTE, SBYTE, I16, U16, I32, U32, I64, U64, F32, F64, STRING, BIGINT }
+private enum class T { BOOL, BYTE, SBYTE, I16, U16, I32, U32, I64, U64, F32, F64, STRING, BIGINT, DECIMAL }
 
 private data class BigLayout(val signOff: Int, val bitsOff: Int, val bitsLen: Int)
+private data class DecLayout(val flagsOff: Int, val hiOff: Int, val midOff: Int, val loOff: Int)
 
 private data class Field(
     val id: Long, val cls: String, val name: String, val off: Int,
@@ -36,11 +37,15 @@ private data class CD(
     val btypes: IntArray, val addl: IntArray,
 )
 
+private data class Edge(val cls: String, val mn: String, val ownerObjId: Long)
+
 private class W(val buf: ByteArray) {
     var pos = 0
     val classes = HashMap<Long, CD>()
     val fields = ArrayList<Field>()
     val ctx = ArrayDeque<Pair<String, String>>()
+    val refOwners = HashMap<Long, Edge>()
+    var pendingObjId: Long = 0L
     var nextId = 0L
 
     private fun isGen(n: String) = n in GENERIC
@@ -49,6 +54,13 @@ private class W(val buf: ByteArray) {
         for (i in ctx.indices.reversed()) {
             val (c, m) = ctx[i]
             if (!isGen(m)) return c to m
+        }
+        var cursor = pendingObjId
+        val seen = HashSet<Long>()
+        while (cursor != 0L && seen.add(cursor)) {
+            val e = refOwners[cursor] ?: break
+            if (!isGen(e.mn)) return e.cls to e.mn
+            cursor = e.ownerObjId
         }
         return cls to name
     }
@@ -74,7 +86,11 @@ private class W(val buf: ByteArray) {
             16 -> readArrayObj()
             17 -> readArrayStr()
             8 -> { val pc = u8(); readPrim("Untyped", "value", pc) }
-            9 -> u32()
+            9 -> {
+                val targetId = u32()
+                val owner = ctx.lastOrNull()
+                if (owner != null) refOwners[targetId] = Edge(owner.first, owner.second, pendingObjId)
+            }
             10 -> {}
             13 -> u8()
             14 -> u32()
@@ -93,13 +109,24 @@ private class W(val buf: ByteArray) {
         if (!systemLib) u32()
         val cd = CD(name, mn, bt, ad)
         classes[id] = cd
-        readInstance(cd)
+        recordOwnership(id)
+        val saved = pendingObjId
+        pendingObjId = id
+        try { readInstance(cd) } finally { pendingObjId = saved }
     }
 
     private fun readClassWithId() {
-        u32(); val meta = u32()
+        val newId = u32(); val meta = u32()
         val cd = classes[meta] ?: error("unknown class id $meta")
-        readInstance(cd)
+        recordOwnership(newId)
+        val saved = pendingObjId
+        pendingObjId = newId
+        try { readInstance(cd) } finally { pendingObjId = saved }
+    }
+
+    private fun recordOwnership(newId: Long) {
+        val owner = ctx.lastOrNull() ?: return
+        refOwners.putIfAbsent(newId, Edge(owner.first, owner.second, pendingObjId))
     }
 
     private fun addl(bt: Int, ad: IntArray, i: Int) {
@@ -118,9 +145,47 @@ private class W(val buf: ByteArray) {
             cd.btypes[0] == 0 && cd.addl[0] == 8 &&
             cd.btypes[1] == 7 && cd.addl[1] == 15
 
+    private fun isDecimal(cd: CD): Boolean {
+        if (cd.name != "System.Decimal") return false
+        if (cd.mnames.size != 4) return false
+        for (i in 0 until 4) {
+            if (cd.btypes[i] != 0 || cd.addl[i] != 8) return false
+        }
+        return true
+    }
+
     private fun readInstance(cd: CD) {
         if (isBigInt(cd)) { readBigInt(cd); return }
+        if (isDecimal(cd)) { readDecimal(cd); return }
         for (i in cd.mnames.indices) readMember(cd.name, cd.mnames[i], cd.btypes[i], cd.addl[i])
+    }
+
+    private fun readDecimal(cd: CD) {
+        val offs = IntArray(4); val vs = IntArray(4)
+        for (i in 0 until 4) { offs[i] = pos; vs[i] = i32() }
+        fun idx(vararg cands: String): Int {
+            for (c in cands) {
+                val i = cd.mnames.indexOfFirst { it.equals(c, true) }
+                if (i >= 0) return i
+            }
+            return -1
+        }
+        val fi = idx("flags", "_flags"); val hi = idx("hi", "_hi")
+        val lo = idx("lo", "_lo"); val mi = idx("mid", "_mid")
+        if (fi < 0 || hi < 0 || lo < 0 || mi < 0) {
+            for (i in 0 until 4) rec(cd.name, cd.mnames[i], offs[i], T.I32, vs[i].toLong())
+            return
+        }
+        val sign = (vs[fi] ushr 31) and 1
+        val scale = (vs[fi] ushr 16) and 0xFF
+        val mask = java.math.BigInteger.valueOf(0xFFFFFFFFL)
+        val unscaled = java.math.BigInteger.valueOf(vs[hi].toLong() and 0xFFFFFFFFL).shiftLeft(64)
+            .or(java.math.BigInteger.valueOf(vs[mi].toLong() and 0xFFFFFFFFL).shiftLeft(32))
+            .or(java.math.BigInteger.valueOf(vs[lo].toLong() and 0xFFFFFFFFL))
+        val signed = if (sign != 0) unscaled.negate() else unscaled
+        val value = java.math.BigDecimal(signed, scale)
+        val (eCls, eName) = best(cd.name, "value")
+        fields.add(Field(nextId++, eCls, eName, offs[fi], T.DECIMAL, value, DecLayout(offs[fi], offs[hi], offs[mi], offs[lo])))
     }
 
     private fun readMember(cls: String, mn: String, bt: Int, ap: Int) {
@@ -128,17 +193,22 @@ private class W(val buf: ByteArray) {
             0 -> readPrim(cls, mn, ap)
             1, 2, 3, 4, 5, 6, 7 -> {
                 ctx.addLast(cls to mn)
+                System.err.println("PUSH $cls.$mn → ctx.size=${ctx.size}")
                 try {
                     val rt = u8()
                     if (rt == 11) return
                     handle(rt)
-                } finally { ctx.removeLast() }
+                } finally {
+                    ctx.removeLast()
+                    System.err.println("POP  $cls.$mn → ctx.size=${ctx.size}")
+                }
             }
             else -> error("bad bt $bt for $cls.$mn")
         }
     }
 
     private fun readBigInt(cd: CD) {
+        System.err.println("readBigInt: ctx=$ctx")
         val signOff = pos
         val sign = i32()
         val rt = u8()
@@ -172,6 +242,7 @@ private class W(val buf: ByteArray) {
     }
 
     private fun readPrim(cls: String, mn: String, pc: Int) {
+        if (mn == "value") System.err.println("readPrim($cls, $mn): ctx=$ctx")
         val (eCls, eName) = best(cls, mn)
         val off = pos
         when (pc) {
@@ -237,11 +308,25 @@ fun main(args: Array<String>) {
     val err = runCatching { w.run() }.exceptionOrNull()
     println("parsed=${w.fields.size}, error=$err")
 
+    println("\n=== CLASS DEFINITIONS ===")
+    for ((id, cd) in w.classes) {
+        println("[$id] ${cd.name}")
+        for (i in cd.mnames.indices) {
+            println("    .${cd.mnames[i]}  bt=${cd.btypes[i]}  ad=${cd.addl[i]}")
+        }
+    }
+
     val bigInts = w.fields.filter { it.type == T.BIGINT }
     println("\nBIGINT fields (${bigInts.size}):")
     for (f in bigInts) {
         val layout = f.meta as? BigLayout
         println("  [${f.cls}] ${f.name} = ${f.value}  (signOff=0x${f.off.toString(16)}, bitsLen=${layout?.bitsLen ?: 0})")
+    }
+
+    val decs = w.fields.filter { it.type == T.DECIMAL }
+    println("\nDECIMAL fields (${decs.size}):")
+    for (f in decs.take(20)) {
+        println("  [${f.cls}] ${f.name} = ${f.value}  (flagsOff=0x${f.off.toString(16)})")
     }
 
     val stillGeneric = w.fields.filter { it.name in GENERIC }
